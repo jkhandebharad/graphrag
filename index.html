@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GraphRAG Document Search</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #F3F4F6;
+        }
+        .container {
+            max-width: 900px;
+            margin: auto;
+            padding: 2rem;
+        }
+        .tab-button.active {
+            border-bottom: 2px solid #4F46E5;
+            color: #4F46E5;
+        }
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex items-center justify-center p-4">
+
+    <div class="bg-white rounded-xl shadow-lg w-full max-w-2xl p-8">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">GraphRAG Document Search</h1>
+        <div class="flex justify-center mb-6">
+            <button id="searchTab" class="tab-button active px-4 py-2 text-lg font-medium text-gray-600 focus:outline-none hover:bg-gray-50 transition-colors">
+                Search Documents
+            </button>
+            <button id="uploadTab" class="tab-button px-4 py-2 text-lg font-medium text-gray-600 focus:outline-none hover:bg-gray-50 transition-colors">
+                Upload Documents
+            </button>
+        </div>
+
+        <!-- Search Section -->
+        <div id="searchSection" class="tab-content">
+            <div class="space-y-4">
+                <div>
+                    <label for="searchFirmId" class="block text-sm font-medium text-gray-700">Firm ID</label>
+                    <input type="text" id="searchFirmId" placeholder="e.g., 1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2">
+                </div>
+                <div>
+                    <label for="searchCaseId" class="block text-sm font-medium text-gray-700">Case ID</label>
+                    <input type="text" id="searchCaseId" placeholder="e.g., CaseA" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2">
+                </div>
+                <div>
+                    <label for="question" class="block text-sm font-medium text-gray-700">Question to Ask</label>
+                    <textarea id="question" rows="3" placeholder="Enter your question here..." class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2"></textarea>
+                </div>
+                <button id="queryButton" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors">
+                    Search
+                </button>
+            </div>
+
+            <div id="answerSection" class="mt-8 border border-gray-300 rounded-md p-4 bg-gray-50 min-h-[100px] flex items-center justify-center">
+                <p id="answerText" class="text-gray-800 text-center">Your answer will appear here.</p>
+            </div>
+        </div>
+
+        <!-- Upload Section -->
+        <div id="uploadSection" class="tab-content hidden">
+            <div class="space-y-4">
+                <div>
+                    <label for="uploadFirmId" class="block text-sm font-medium text-gray-700">Firm ID</label>
+                    <input type="text" id="uploadFirmId" placeholder="e.g., 1" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2">
+                </div>
+                <div>
+                    <label for="uploadCaseId" class="block text-sm font-medium text-gray-700">Case ID</label>
+                    <input type="text" id="uploadCaseId" placeholder="e.g., CaseA" class="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-indigo-500 focus:ring-indigo-500 p-2">
+                </div>
+                <div>
+                    <label for="documentFile" class="block text-sm font-medium text-gray-700">Select Document(s) (.pdf, .docx, .txt)</label>
+                    <input type="file" id="documentFile" class="mt-1 block w-full text-sm text-gray-500
+                        file:mr-4 file:py-2 file:px-4
+                        file:rounded-full file:border-0
+                        file:text-sm file:font-semibold
+                        file:bg-indigo-50 file:text-indigo-700
+                        hover:file:bg-indigo-100 transition-colors" multiple>
+                </div>
+                <button id="uploadButton" class="w-full flex justify-center py-2 px-4 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 transition-colors">
+                    Upload & Index
+                </button>
+            </div>
+            <div id="uploadStatus" class="mt-4 text-center text-sm font-medium text-gray-600"></div>
+        </div>
+    </div>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            // Tab switching logic
+            const searchTab = document.getElementById('searchTab');
+            const uploadTab = document.getElementById('uploadTab');
+            const searchSection = document.getElementById('searchSection');
+            const uploadSection = document.getElementById('uploadSection');
+
+            searchTab.addEventListener('click', () => {
+                searchTab.classList.add('active');
+                uploadTab.classList.remove('active');
+                searchSection.classList.remove('hidden');
+                uploadSection.classList.add('hidden');
+            });
+
+            uploadTab.addEventListener('click', () => {
+                uploadTab.classList.add('active');
+                searchTab.classList.remove('active');
+                uploadSection.classList.remove('hidden');
+                searchSection.classList.add('hidden');
+            });
+
+            // Upload functionality
+            const uploadButton = document.getElementById('uploadButton');
+            const uploadFirmIdInput = document.getElementById('uploadFirmId');
+            const uploadCaseIdInput = document.getElementById('uploadCaseId');
+            const documentFileInput = document.getElementById('documentFile');
+            const uploadStatus = document.getElementById('uploadStatus');
+
+            uploadButton.addEventListener('click', async () => {
+                const firmId = uploadFirmIdInput.value;
+                const caseId = uploadCaseIdInput.value;
+                const files = documentFileInput.files;
+
+                if (!firmId || !caseId || files.length === 0) {
+                    uploadStatus.textContent = 'Please provide a Firm ID, Case ID and select at least one file.';
+                    uploadStatus.style.color = '#EF4444';
+                    return;
+                }
+
+                const formData = new FormData();
+                formData.append('firm_id', firmId);
+                formData.append('case_id', caseId);
+
+                for (let i = 0; i < files.length; i++) {
+                    formData.append('files', files[i]); // Matches FastAPI endpoint
+                }
+
+                uploadStatus.textContent = 'Uploading and indexing... This may take a moment.';
+                uploadStatus.style.color = '#6B7280';
+
+                try {
+                    const response = await fetch('http://127.0.0.1:8001/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        // List all uploaded filenames
+                        const filenames = result.documents_info.map(doc => doc.filename).join(', ');
+                        uploadStatus.textContent = `Success: ${result.message}. Uploaded: ${filenames}`;
+                        uploadStatus.style.color = '#10B981';
+                    } else {
+                        uploadStatus.textContent = 'Error: ' + result.detail;
+                        uploadStatus.style.color = '#EF4444';
+                    }
+                } catch (error) {
+                    uploadStatus.textContent = 'An error occurred. Please check the server and try again.';
+                    uploadStatus.style.color = '#EF4444';
+                }
+            });
+
+            // Query functionality
+            const queryButton = document.getElementById('queryButton');
+            const searchFirmIdInput = document.getElementById('searchFirmId');
+            const searchCaseIdInput = document.getElementById('searchCaseId');
+            const questionInput = document.getElementById('question');
+            const answerText = document.getElementById('answerText');
+
+            queryButton.addEventListener('click', async () => {
+                const firmId = searchFirmIdInput.value;
+                const caseId = searchCaseIdInput.value;
+                const question = questionInput.value;
+
+                if (!firmId || !caseId || !question) {
+                    answerText.textContent = 'Please provide a Firm ID, Case ID and a question.';
+                    answerText.style.color = '#EF4444';
+                    return;
+                }
+                
+                answerText.textContent = 'Searching...';
+                answerText.style.color = '#6B7280';
+
+                try {
+                    const response = await fetch('http://127.0.0.1:8001/query', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            firm_id: firmId,
+                            case_id: caseId,
+                            question: question
+                        })
+                    });
+
+                    const result = await response.json();
+                    if (response.ok) {
+                        answerText.innerHTML = marked.parse(result.answer || 'No answer found.');
+                        answerText.style.color = '#374151';
+                    } else {
+                        answerText.textContent = 'Error: ' + result.detail;
+                        answerText.style.color = '#EF4444';
+                    }
+                } catch (error) {
+                    answerText.textContent = 'An error occurred. Please check the server and try again.' + error;
+                    answerText.style.color = '#EF4444';
+                }
+            });
+        });
+    </script>
+
+</body>
+</html>
+

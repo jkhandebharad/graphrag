@@ -39,13 +39,28 @@ class CosmosDBPipelineStorage(PipelineStorage):
     _encoding: str
     _no_id_prefixes: list[str]
 
-    def __init__(self, **kwargs: Any) -> None:
+    def __init__(
+        self,
+        database_name: str | None = None,
+        container_name: str | None = None,
+        cosmosdb_account_url: str | None = None,
+        connection_string: str | None = None,
+        encoding: str = "utf-8",
+        type: str | None = None,  # Accept type parameter for GraphRAG compatibility
+        base_dir: str | None = None,  # GraphRAG passes base_dir instead of database_name
+        storage_account_blob_url: str | None = None,  # GraphRAG parameter
+        **kwargs  # Accept any additional parameters
+    ) -> None:
         """Create a CosmosDB storage instance."""
         logger.info("Creating cosmosdb storage")
-        cosmosdb_account_url = kwargs.get("cosmosdb_account_url")
-        connection_string = kwargs.get("connection_string")
-        database_name = kwargs["base_dir"]
-        container_name = kwargs["container_name"]
+        
+        # Handle GraphRAG parameters - base_dir is used as database_name
+        if base_dir is not None and database_name is None:
+            database_name = base_dir
+        if database_name is None:
+            raise ValueError("Either database_name or base_dir must be provided")
+        if container_name is None:
+            raise ValueError("container_name must be provided")
         if not database_name:
             msg = "No base_dir provided for database name"
             raise ValueError(msg)
@@ -138,7 +153,7 @@ class CosmosDBPipelineStorage(PipelineStorage):
         """
         base_dir = base_dir or ""
         logger.info(
-            "search container %s for documents matching %s",
+            "search container %s for individual documents matching %s",
             self._container_name,
             file_pattern.pattern,
         )
@@ -154,42 +169,53 @@ class CosmosDBPipelineStorage(PipelineStorage):
             )
 
         try:
-            query = "SELECT * FROM c WHERE RegexMatch(c.id, @pattern)"
-            parameters: list[dict[str, Any]] = [
-                {"name": "@pattern", "value": file_pattern.pattern}
-            ]
-            if file_filter:
-                for key, value in file_filter.items():
-                    query += f" AND c.{key} = @{key}"
-                    parameters.append({"name": f"@{key}", "value": value})
-            items = list(
-                self._container_client.query_items(
+            # Query individual documents based on case_id and is_text
+            if file_filter and "case_id" in file_filter:
+                case_id = file_filter["case_id"]
+                query = "SELECT * FROM c WHERE c.case_id = @case_id"
+                parameters = [{"name": "@case_id", "value": case_id}]
+                if "is_text" in file_filter:
+                    query += " AND c.is_text = @is_text"
+                    parameters.append({"name": "@is_text", "value": file_filter["is_text"]})
+                items = self._container_client.query_items(
                     query=query,
                     parameters=parameters,
-                    enable_cross_partition_query=True,
+                    enable_cross_partition_query=True
                 )
-            )
+            else:
+                query = "SELECT * FROM c"
+                items = self._container_client.query_items(
+                    query=query,
+                    enable_cross_partition_query=True
+                )
+            
             num_loaded = 0
-            num_total = len(items)
-            if num_total == 0:
-                return
             num_filtered = 0
             for item in items:
-                match = file_pattern.search(item["id"])
-                if match:
+                filename = item.get("id", "")
+                match = file_pattern.search(filename)
+                if match and item_filter(item):
                     group = match.groupdict()
-                    if item_filter(group):
-                        yield (item["id"], group)
-                        num_loaded += 1
-                        if max_count > 0 and num_loaded >= max_count:
-                            break
-                    else:
-                        num_filtered += 1
+                    # Include document metadata in the group
+                    group.update({
+                        "original_filename": item.get("original_filename", ""),
+                        "case_id": item.get("case_id", ""),
+                        "document_id": item.get("document_id", ""),
+                        "firm_id": item.get("firm_id", ""),
+                        "content_type": item.get("content_type", ""),
+                        "is_text": item.get("is_text", ""),
+                        "is_indexed": item.get("is_indexed", False),
+                        "created_at": item.get("created_at", ""),
+                    })
+                    yield (filename, group)
+                    num_loaded += 1
+                    if max_count > 0 and num_loaded >= max_count:
+                        break
                 else:
                     num_filtered += 1
 
                 progress_status = _create_progress_status(
-                    num_loaded, num_filtered, num_total
+                    num_loaded, num_filtered, num_loaded + num_filtered
                 )
                 logger.debug(
                     "Progress: %s (%d/%d completed)",
@@ -199,13 +225,13 @@ class CosmosDBPipelineStorage(PipelineStorage):
                 )
         except Exception:  # noqa: BLE001
             logger.warning(
-                "An error occurred while searching for documents in Cosmos DB."
+                "An error occurred while searching for individual documents in Cosmos DB."
             )
 
     async def get(
         self, key: str, as_bytes: bool | None = None, encoding: str | None = None
     ) -> Any:
-        """Fetch all items in a container that match the given key."""
+        """Fetch individual documents."""
         try:
             if not self._database_client or not self._container_client:
                 return None
@@ -231,6 +257,21 @@ class CosmosDBPipelineStorage(PipelineStorage):
                     items_df.drop(columns=["id"], axis=1, inplace=True)
 
                 return items_df.to_parquet()
+            
+            # Handle .txt files for individual documents
+            if key.endswith('.txt') and not as_bytes:
+                try:
+                    doc = self._container_client.read_item(
+                        item=key,
+                        partition_key=key
+                    )
+                    content = doc.get("content", "")
+                    logger.info(f"Retrieved individual document: {key} ({len(content)} chars)")
+                    return content
+                except Exception as e:
+                    logger.warning(f"Could not retrieve individual document {key}: {e}")
+                    return None
+            
             item = self._container_client.read_item(item=key, partition_key=key)
             item_body = item.get("body")
             return json.dumps(item_body)
@@ -239,44 +280,58 @@ class CosmosDBPipelineStorage(PipelineStorage):
             return None
 
     async def set(self, key: str, value: Any, encoding: str | None = None) -> None:
-        """Insert the contents of a file into a cosmosdb container for the given filename key.
+        """Insert or overwrite the contents of a file into a CosmosDB container for the given filename key.
 
-        For better optimization, the file is destructured such that each row is a unique cosmosdb item.
+        Handles parquet datasets (entities, documents, relationships) and JSON (cache/stats).
+        Ensures GraphRAG prefix consistency and safe overwriting.
         """
+
         try:
             if not self._database_client or not self._container_client:
-                msg = "Database or container not initialized"
-                raise ValueError(msg)  # noqa: TRY301
-            # value represents a parquet file
+                raise ValueError("Database or container not initialized")
+
+            # --- Case 1: Parquet-based datasets (GraphRAG core tables) ---
             if isinstance(value, bytes):
                 prefix = self._get_prefix(key)
                 value_df = pd.read_parquet(BytesIO(value))
-                value_json = value_df.to_json(
-                    orient="records", lines=False, force_ascii=False
-                )
-                if value_json is None:
+                value_json = value_df.to_json(orient="records", lines=False, force_ascii=False)
+
+                if not value_json:
                     logger.error("Error converting output %s to json", key)
-                else:
-                    cosmosdb_item_list = json.loads(value_json)
-                    for index, cosmosdb_item in enumerate(cosmosdb_item_list):
-                        # If the id key does not exist in the input dataframe json, create a unique id using the prefix and item index
-                        # TODO: Figure out optimal way to handle missing id keys in input dataframes
-                        if "id" not in cosmosdb_item:
-                            prefixed_id = f"{prefix}:{index}"
-                            self._no_id_prefixes.append(prefix)
-                        else:
-                            prefixed_id = f"{prefix}:{cosmosdb_item['id']}"
-                        cosmosdb_item["id"] = prefixed_id
-                        self._container_client.upsert_item(body=cosmosdb_item)
-            # value represents a cache output or stats.json
+                    return
+
+                cosmosdb_item_list = json.loads(value_json)
+
+                for index, cosmosdb_item in enumerate(cosmosdb_item_list):
+                    raw_id = cosmosdb_item.get("id", "").strip() if cosmosdb_item.get("id") else ""
+
+                    # ✅ Always keep GraphRAG dataset prefixes (documents:, entities:, relationships:)
+                    if raw_id.startswith(prefix + ":"):
+                        prefixed_id = raw_id
+                    elif raw_id:
+                        prefixed_id = f"{prefix}:{raw_id}"
+                    else:
+                        prefixed_id = f"{prefix}:{index}"
+
+                    cosmosdb_item["id"] = prefixed_id
+
+                    # ✅ Overwrite if already exists (upsert)
+                    self._container_client.upsert_item(body=cosmosdb_item)
+                    logger.info(f"Upserted item: {prefixed_id}")
+
+            # --- Case 2: Non-parquet JSON files (cache, stats.json, context.json, etc.) ---
             else:
                 cosmosdb_item = {
                     "id": key,
                     "body": json.loads(value),
                 }
                 self._container_client.upsert_item(body=cosmosdb_item)
+                logger.info(f"Upserted single item: {key}")
+
         except Exception:
             logger.exception("Error writing item %s", key)
+
+        
 
     async def has(self, key: str) -> bool:
         """Check if the contents of the given filename key exist in the cosmosdb storage."""

@@ -1,0 +1,51 @@
+# Core Azure and Database Libraries
+azure-cosmos
+azure-identity
+azure-storage-blob
+azure-search-documents
+
+# FastAPI and Web Framework
+fastapi
+uvicorn[standard]
+python-multipart
+
+# Environment and Configuration
+python-dotenv
+pyyaml
+pydantic
+
+# Document Processing Libraries
+PyPDF2
+pdf2image
+pytesseract
+python-docx
+openpyxl
+
+# Data Science and ML Libraries
+pandas
+numpy
+pyarrow
+lancedb
+networkx
+graspologic
+umap-learn
+
+# LLM and AI Libraries
+openai
+fnllm[azure,openai]
+litellm
+tiktoken
+json-repair
+
+# Text Processing
+nltk
+spacy
+textblob
+
+# Utilities
+aiofiles
+tqdm
+typing-extensions
+future
+environs
+devtools

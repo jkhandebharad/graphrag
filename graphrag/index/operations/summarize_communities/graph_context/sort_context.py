@@ -53,33 +53,66 @@ def sort_context(
 
         return "\n\n".join(contexts)
 
-    # Preprocess local context
-    edges = [
-        {**e, schemas.SHORT_ID: int(e[schemas.SHORT_ID])}
-        for record in local_context
-        for e in record.get(edge_details_column, [])
-        if isinstance(e, dict)
-    ]
+    # ------------------------------------------------------------------
+    # Preprocess local context — compatible with both short_id & human_readable_id
+    # ------------------------------------------------------------------
+    edges = []
+    for record in local_context:
+        for e in record.get(edge_details_column, []):
+            if isinstance(e, dict):
+                sid = (
+                    e.get(schemas.SHORT_ID)
+                    or e.get("human_readable_id")
+                    or 0
+                )
+                try:
+                    sid = int(sid)
+                except (ValueError, TypeError):
+                    sid = 0
+                e[schemas.SHORT_ID] = sid
+                edges.append(e)
 
-    node_details = {
-        record[node_name_column]: {
-            **record[node_details_column],
-            schemas.SHORT_ID: int(record[node_details_column][schemas.SHORT_ID]),
-        }
-        for record in local_context
-    }
+    node_details = {}
+    for record in local_context:
+        node_info = record.get(node_details_column, {})
+        if not isinstance(node_info, dict):
+            continue
+        sid = (
+            node_info.get(schemas.SHORT_ID)
+            or node_info.get("human_readable_id")
+            or 0
+        )
+        try:
+            sid = int(sid)
+        except (ValueError, TypeError):
+            sid = 0
+        node_info[schemas.SHORT_ID] = sid
+        node_details[record[node_name_column]] = node_info
 
-    claim_details = {
-        record[node_name_column]: [
-            {**c, schemas.SHORT_ID: int(c[schemas.SHORT_ID])}
-            for c in record.get(claim_details_column, [])
-            if isinstance(c, dict) and c.get(schemas.SHORT_ID) is not None
-        ]
-        for record in local_context
-        if isinstance(record.get(claim_details_column), list)
-    }
+    claim_details = {}
+    for record in local_context:
+        claims = record.get(claim_details_column, [])
+        if not isinstance(claims, list):
+            continue
+        fixed_claims = []
+        for c in claims:
+            if isinstance(c, dict):
+                sid = (
+                    c.get(schemas.SHORT_ID)
+                    or c.get("human_readable_id")
+                    or 0
+                )
+                try:
+                    sid = int(sid)
+                except (ValueError, TypeError):
+                    sid = 0
+                c[schemas.SHORT_ID] = sid
+                fixed_claims.append(c)
+        claim_details[record[node_name_column]] = fixed_claims
 
+    # ------------------------------------------------------------------
     # Sort edges by degree (desc) and ID (asc)
+    # ------------------------------------------------------------------
     edges.sort(key=lambda x: (-x.get(edge_degree_column, 0), x.get(edge_id_column, "")))
 
     # Deduplicate and build context incrementally
