@@ -1,0 +1,253 @@
+### GraphRAG Configuration with CosmosDB Integration
+### This config file contains required core defaults that must be set, along with a handful of common optional settings.
+### For a full list of available settings, see https://microsoft.github.io/graphrag/config/yaml/
+###
+### CosmosDB Integration Notes:
+### - CosmosDB storage is handled at the application layer (app/cosmos_*.py modules)
+### - GraphRAG still uses temporary local files for processing
+### - Input documents are fetched from CosmosDB input container
+### - Output data (graph + vectors) is uploaded to CosmosDB output container
+### - Cache and logs are stored in respective CosmosDB containers
+### - All data is partitioned by case_id for multi-case isolation
+
+### LLM settings ###
+## There are a number of settings to tune the threading and token limits for LLM calls - check the docs.
+
+models:
+  default_chat_model:
+    type: azure_openai_chat
+    api_base: https://oai-lexee-nonprod-eus-01.openai.azure.com
+    api_version: 2025-01-01-preview
+    auth_type: api_key
+    api_key: ${GRAPHRAG_API_KEY} # store in .env
+    model: gpt-4o
+    deployment_name: gpt-4o
+    model_supports_json: true
+    concurrent_requests: 25
+    async_mode: threaded
+    retry_strategy: native
+    max_retries: 10
+    tokens_per_minute: auto
+    requests_per_minute: auto
+
+  default_embedding_model:
+    type: azure_openai_embedding
+    api_base: https://oai-lexee-nonprod-eus-01.openai.azure.com
+    api_version: "2023-05-15"
+    auth_type: api_key
+    api_key: ${GRAPHRAG_API_KEY} # store in .env
+    model: text-embedding-3-small
+    deployment_name: text-embedding-3-small
+    model_supports_json: true
+    concurrent_requests: 25
+    async_mode: threaded
+    retry_strategy: native
+    max_retries: 10
+    tokens_per_minute: auto
+    requests_per_minute: auto
+
+### Input/storage settings ###
+### CosmosDB Integration: Documents can be stored directly in CosmosDB or managed via application layer
+input:
+  storage:
+    type: cosmosdb # Native GraphRAG CosmosDB support
+    connection_string: ${COSMOS_CONNECTION_STRING}
+    container_name: input
+    cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
+    base_dir: "graphrag" # Database name (will be overridden with COSMOS_DATABASE_NAME if set)
+    
+  file_type: text # Read text documents from CosmosDB (content is plain text)
+  file_pattern: ".*\\.txt$" # Files have .txt extension with plain text content
+  text_column: content # The field containing extracted text (from our structured response)
+  title_column: original_filename # Use original_filename field as document title
+  metadata: 
+    - original_filename
+    - case_id
+    - document_id
+  file_filter:
+    is_text: "true"
+    case_id: "" # Will be set dynamically per case
+  
+  # CosmosDB container structure:
+  # - Partition key: /case_id
+  # - Documents: {id: "input/{case_id}/{doc_id}", content: "...", ...}
+  # - Application uses cosmos_input.py for enhanced document management
+
+  
+
+chunks:
+  size: 1200
+  overlap: 100
+  group_by_columns: [id]
+
+### Output/storage settings ###
+## CosmosDB Integration: GraphRAG outputs are uploaded to CosmosDB after processing
+## Output container stores both graph data AND vectors (as requested)
+## Structure: 
+##   - Graph data: {id: "output/{case_id}/{type}", data: [...]}
+##   - Vectors: {id: "vectors/{case_id}/{vector_id}", embedding: [...]}
+
+output:
+  type: cosmosdb # Native GraphRAG CosmosDB support
+  connection_string: ${COSMOS_CONNECTION_STRING}
+  container_name: output
+  cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
+  base_dir: "graphrag" # Database name
+  
+  # Alternative: Use type: file for local testing
+  # type: file
+  # base_dir: "output"
+  
+  # CosmosDB container structure:
+  # - Partition key: /case_id
+  # - Graph data: {id: "output/{case_id}/{type}", data: [...]}
+  # - Vectors: {id: "vectors/{case_id}/{vector_id}", embedding: [...]}
+    
+# Update index output configuration (for incremental indexing)
+# This is where GraphRAG stores previous and delta data
+update_index_output:
+  type: file
+  base_dir: "update_output"
+  # GraphRAG creates timestamped folders like: update_output/YYYYMMDD-HHMMSS/
+  # Inside each timestamped folder:
+  # - delta/ - contains changes from new documents
+  # - previous/ - contains backup of previous state
+    
+cache:
+  type: cosmosdb # Native GraphRAG CosmosDB support
+  connection_string: ${COSMOS_CONNECTION_STRING}
+  container_name: cache
+  cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
+  base_dir: "graphrag" # Database name
+  
+  # Alternative: Use type: file for local testing
+  # type: file
+  # base_dir: "cache"
+  
+  # CosmosDB container structure:
+  # - Partition key: /case_id
+  # - Cache entries: {id: "cache/{case_id}/{type}/{hash}", ...}
+  # - Types: text_embedding, chat_completion, summarization
+  # - Significantly reduces API costs on repeated operations
+
+reporting:
+  type: file # GraphRAG internal logs saved to ragtest/logs/{case_id}
+  base_dir: "logs" # Will be configured as logs/{case_id} per indexing run
+  
+  # Alternative: Use type: file for local testing
+  # type: file
+  # base_dir: "logs"
+  
+  # CosmosDB container structure:
+  # - Partition key: /case_id
+  # - Log entries: {id: "logs/{case_id}/{timestamp}", level: "INFO", ...}
+  # - Queryable by case_id, level, source, timestamp
+  # - Application also uses cosmos_logs.py for structured logging
+vector_store:
+  default_vector_store:
+    type: cosmosdb
+    url: ${COSMOS_ENDPOINT}
+    connection_string: ${COSMOS_CONNECTION_STRING}
+    container_name: output
+    overwrite: False
+
+    
+    # Alternative: Use separate container for vectors
+    # container_name: vectors
+    
+    # Alternative: Use LanceDB for local testing
+    # type: lancedb
+    # db_uri: output\lancedb
+    # container_name: default
+    
+    # CosmosDB container structure:
+    # - Partition key: /case_id
+    # - Vectors stored with graph data in output container
+    # - Document structure: {id: "vectors/{case_id}/{vector_id}", embedding: [...], ...}
+    # - Unified storage for all case data (graph + vectors)
+
+### Workflow settings ###
+workflows:
+  - load_input_documents
+  - create_base_text_units
+  - create_final_documents
+  - extract_graph
+  - finalize_graph
+  - extract_covariates
+  - create_communities
+  - create_final_text_units
+  - create_community_reports
+  - generate_text_embeddings
+
+
+embed_text:
+  model_id: default_embedding_model
+  vector_store_id: default_vector_store
+
+extract_graph:
+  model_id: default_chat_model
+  prompt: "prompts/extract_graph.txt"
+  entity_types: [organization,person,geo,event]
+  max_gleanings: 1
+
+summarize_descriptions:
+  model_id: default_chat_model
+  prompt: "prompts/summarize_descriptions.txt"
+  max_length: 500
+
+extract_graph_nlp:
+  text_analyzer:
+    extractor_type: regex_english # [regex_english, syntactic_parser, cfg]
+
+cluster_graph:
+  max_cluster_size: 10
+
+extract_claims:
+  enabled: false
+  model_id: default_chat_model
+  prompt: "prompts/extract_claims.txt"
+  description: "Any claims or facts that could be relevant to information discovery."
+  max_gleanings: 1
+
+community_reports:
+  model_id: default_chat_model
+  graph_prompt: "prompts/community_report_graph.txt"
+  text_prompt: "prompts/community_report_text.txt"
+  max_length: 2000
+  max_input_length: 8000
+
+embed_graph:
+  enabled: false # if true, will generate node2vec embeddings for nodes
+
+umap:
+  enabled: false # if true, will generate UMAP embeddings for nodes (embed_graph must also be enabled)
+
+snapshots:
+  graphml: false
+  embeddings: false
+
+### Query settings ###
+## The prompt locations are required here, but each search method has a number of optional knobs that can be tuned.
+## See the config docs: https://microsoft.github.io/graphrag/config/yaml/#query
+
+local_search:
+  chat_model_id: default_chat_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/local_search_system_prompt_enhanced.txt"
+
+global_search:
+  chat_model_id: default_chat_model
+  map_prompt: "prompts/global_search_map_system_prompt.txt"
+  reduce_prompt: "prompts/global_search_reduce_system_prompt.txt"
+  knowledge_prompt: "prompts/global_search_knowledge_system_prompt.txt"
+
+drift_search:
+  chat_model_id: default_chat_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/drift_search_system_prompt.txt"
+  reduce_prompt: "prompts/drift_search_reduce_prompt.txt"
+
+basic_search:
+  chat_model_id: default_chat_model
+  embedding_model_id: default_embedding_model
+  prompt: "prompts/basic_search_system_prompt_enhanced.txt"

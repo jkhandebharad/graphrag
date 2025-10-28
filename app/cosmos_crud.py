@@ -32,7 +32,10 @@ from openpyxl import load_workbook
 from app.cosmos_client import CosmosDBManager
 RAG_ROOT = "ragtest"
 CONFIG_PATH = os.path.join(RAG_ROOT, "settings.yaml").replace("\\", "/")
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+POPPLER_PATH = os.getenv("POPPLER_PATH", r"C:\poppler-25.07.0\Library\bin")
+TESSERACT_PATH = os.getenv("TESSERACT_PATH", r"C:\Program Files\Tesseract-OCR")
+
+pytesseract.pytesseract.tesseract_cmd = os.path.join(TESSERACT_PATH, "tesseract.exe")
 
 # Initialize managers (default - will be overridden per firm)
 input_manager = InputManager()
@@ -203,14 +206,41 @@ async def save_document(file: UploadFile, case_id: str, firm_id: str) -> Documen
                 firm_logs_manager.info(case_id, f"Running OCR on {new_filename}", "upload")
                 
                 try:
-                    images = convert_from_path(tmp_file_path)
-                    ocr_text = [pytesseract.image_to_string(img, lang="eng", config="--psm 6") for img in images]
+                    # Primary OCR attempt using pdf2image + pytesseract
+                    images = convert_from_path(tmp_file_path, poppler_path=r"C:\poppler-25.07.0\Library\bin")
+                    ocr_text = []
+                    for img in images:
+                        text = pytesseract.image_to_string(img, lang="eng", config="--psm 6")
+                        ocr_text.append(text)
                     extracted_text = "\n".join(ocr_text)
-                    print(f"   [SUCCESS] OCR successful: {len(extracted_text)} characters")
+                    if extracted_text.strip():
+                        print(f"   [SUCCESS] OCR successful: {len(extracted_text)} characters")
+                    else:
+                        print(f"   [WARNING] OCR returned empty text for {new_filename}")
+                        firm_logs_manager.warning(case_id, f"OCR produced empty text for {new_filename}", "upload")
+
                 except Exception as ocr_e:
                     print(f"   [ERROR] OCR failed for {new_filename}: {ocr_e}")
-                    logs_manager.error(case_id, f"OCR failed: {ocr_e}", "upload")
-                    extracted_text = ""
+                    firm_logs_manager.error(case_id, f"OCR failed: {ocr_e}", "upload")
+
+                    # ✅ Fallback using PyMuPDF (if installed)
+                    try:
+                        import fitz  # PyMuPDF
+                        from PIL import Image
+                        print("   [INFO] Retrying OCR using PyMuPDF...")
+                        with fitz.open(tmp_file_path) as doc:
+                            ocr_text = []
+                            for page in doc:
+                                pix = page.get_pixmap()
+                                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                                text = pytesseract.image_to_string(img, lang="eng", config="--psm 6")
+                                ocr_text.append(text)
+                        extracted_text = "\n".join(ocr_text)
+                        print(f"   [SUCCESS] Fallback OCR extracted {len(extracted_text)} characters")
+                    except Exception as fallback_e:
+                        print(f"   [ERROR] Fallback OCR also failed: {fallback_e}")
+                        firm_logs_manager.error(case_id, f"Fallback OCR failed: {fallback_e}", "upload")
+                        extracted_text = ""
         
         elif file_extension == ".docx":
             print(f"[INFO] Extracting text from DOCX: {new_filename}")
