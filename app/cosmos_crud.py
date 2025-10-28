@@ -46,13 +46,21 @@ logs_manager = LogsManager()
 # Cache for firm managers to avoid re-initialization
 _firm_managers_cache = {}
 
-def get_firm_managers(firm_id: str):
-    """Get or create firm-specific managers"""
-    if firm_id not in _firm_managers_cache:
+def get_firm_managers(firm_id: str, case_id: str = None):
+    """Get or create firm-specific managers with case-specific containers"""
+    if case_id is None:
+        raise ValueError("case_id is required for case-specific containers")
+    
+    cache_key = f"{firm_id}_{case_id}"
+    
+    if cache_key not in _firm_managers_cache:
         # Create firm-specific database manager
         firm_manager = CosmosDBManager()
         firm_manager.database_name = f"graphrag_{firm_id}"
         firm_manager.initialize_database()
+        
+        # Create case-specific containers
+        firm_manager.create_case_specific_containers(case_id)
         
         # Create firm-specific managers
         firm_input_manager = InputManager()
@@ -67,19 +75,19 @@ def get_firm_managers(firm_id: str):
         firm_cache_manager.manager = firm_manager
         firm_cache_manager.container = firm_manager.cache_container
         
-        # ADD THIS: Initialize LogsManager
+        # Initialize LogsManager
         firm_logs_manager = LogsManager()
         firm_logs_manager.manager = firm_manager
         firm_logs_manager.container = firm_manager.logs_container
         
-        _firm_managers_cache[firm_id] = {
+        _firm_managers_cache[cache_key] = {
             'input': firm_input_manager,
             'output': firm_output_manager,
             'cache': firm_cache_manager,
-            'logs': firm_logs_manager  # ADD THIS LINE
+            'logs': firm_logs_manager
         }
     
-    return _firm_managers_cache[firm_id]
+    return _firm_managers_cache[cache_key]
 # ==================== Text Extraction ====================
 
 def clean_ocr_text(text: str) -> str:
@@ -144,7 +152,7 @@ async def save_document(file: UploadFile, case_id: str, firm_id: str) -> Documen
     print(f"[INFO] File: {file.filename}, Firm ID: {firm_id}, Case ID: {case_id}")
     
     # Get firm-specific managers
-    firm_managers = get_firm_managers(firm_id)
+    firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
     firm_cache_manager = firm_managers['cache']
@@ -312,7 +320,7 @@ async def index_documents_for_case(case_id: str, firm_id: str):
     5. Marks documents as indexed
     """
     # Get firm-specific managers
-    firm_managers = get_firm_managers(firm_id)
+    firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
     firm_cache_manager = firm_managers['cache']
@@ -396,6 +404,12 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         # Use persistent logs directory (ragtest/logs/{case_id})
         config_dict["reporting"]["base_dir"] = str(persistent_logs_dir)
         
+        # ===== UPDATE: Set case-specific container names =====
+        config_dict["input"]["storage"]["container_name"] = f"input_{case_id}"
+        config_dict["output"]["container_name"] = f"output_{case_id}"
+        config_dict["cache"]["container_name"] = f"cache_{case_id}"
+        config_dict["vector_store"]["default_vector_store"]["container_name"] = f"output_{case_id}"
+        
         print(f"[CONFIG] CosmosDB native configuration:")
         print(f"   Input:  {config_dict['input']['storage']['container_name']} (filter: case_id={case_id})")
         print(f"   Output: {config_dict['output']['container_name']} (database: {database_name})")
@@ -441,7 +455,7 @@ async def get_answer(query_text: str, case_id: str, firm_id: str):
     Query documents for a given case_id using GraphRAG with CosmosDB storage.
     """
     # Get firm-specific managers
-    firm_managers = get_firm_managers(firm_id)
+    firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
     firm_cache_manager = firm_managers['cache']
@@ -456,9 +470,10 @@ async def get_answer(query_text: str, case_id: str, firm_id: str):
             config_content = config_content.replace(f"${{{var}}}", os.environ[var])
         config_dict = yaml.safe_load(config_content)
         
-        # Set firm-specific database name
+        # Set firm-specific database name and case-specific container
         database_name = f"graphrag_{firm_id}"
         config_dict["output"]["base_dir"] = database_name
+        config_dict["output"]["container_name"] = f"output_{case_id}"
         
         # Create temporary directory for vector store
         temp_dir = Path(tempfile.mkdtemp(prefix=f"graphrag_query_{case_id}_"))

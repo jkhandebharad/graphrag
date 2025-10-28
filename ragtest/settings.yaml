@@ -52,7 +52,7 @@ input:
   storage:
     type: cosmosdb # Native GraphRAG CosmosDB support
     connection_string: ${COSMOS_CONNECTION_STRING}
-    container_name: input
+    container_name: input_{case_id} # Case-specific container
     cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
     base_dir: "graphrag" # Database name (will be overridden with COSMOS_DATABASE_NAME if set)
     
@@ -90,7 +90,7 @@ chunks:
 output:
   type: cosmosdb # Native GraphRAG CosmosDB support
   connection_string: ${COSMOS_CONNECTION_STRING}
-  container_name: output
+  container_name: output_{case_id} # Case-specific container
   cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
   base_dir: "graphrag" # Database name
   
@@ -116,7 +116,7 @@ update_index_output:
 cache:
   type: cosmosdb # Native GraphRAG CosmosDB support
   connection_string: ${COSMOS_CONNECTION_STRING}
-  container_name: cache
+  container_name: cache_{case_id} # Case-specific container
   cosmosdb_account_blob_url: ${COSMOS_ENDPOINT}
   base_dir: "graphrag" # Database name
   
@@ -148,7 +148,7 @@ vector_store:
     type: cosmosdb
     url: ${COSMOS_ENDPOINT}
     connection_string: ${COSMOS_CONNECTION_STRING}
-    container_name: output
+    container_name: output_{case_id} # Case-specific container
     overwrite: False
 
     

@@ -45,41 +45,7 @@ class CosmosDBManager:
         
     def _create_containers(self):
         """Create all required containers with partition keys."""
-        
-        # Input container - stores input documents
-        # Using /caseid as partition key for multi-tenant isolation
-        # Each case's documents are in their own logical partition
-        # caseid format: "12345.txt" for numeric cases, "ABC123" for alphanumeric
-        print("[INFO] Creating 'input' container...")
-        self.input_container = self.database.create_container_if_not_exists(
-            id="input",
-            partition_key=PartitionKey(path="/caseid")
-        )
-        print("[SUCCESS] Input container ready")
-        
-        # Output container - stores graph data AND vectors
-        print("[INFO] Creating 'output' container...")
-        self.output_container = self.database.create_container_if_not_exists(
-            id="output",
-            partition_key=PartitionKey(path="/caseid")
-        )
-        print("[SUCCESS] Output container ready")
-        
-        # Cache container - stores LLM cache
-        print("[INFO] Creating 'cache' container...")
-        self.cache_container = self.database.create_container_if_not_exists(
-            id="cache",
-            partition_key=PartitionKey(path="/caseid")
-        )
-        print("[SUCCESS] Cache container ready")
-        
-        # Logs container - stores processing logs
-        print("[INFO] Creating 'logs' container...")
-        self.logs_container = self.database.create_container_if_not_exists(
-            id="logs",
-            partition_key=PartitionKey(path="/caseid")
-        )
-        print("[SUCCESS] Logs container ready")
+        print("[INFO] Creating general containers (config only)...")
         
         # Config container - stores settings.yaml and prompts (for cloud deployment)
         # Config uses "global" as caseid since it's shared across all cases
@@ -90,31 +56,77 @@ class CosmosDBManager:
         )
         print("[SUCCESS] Config container ready")
         
-        # Vector store containers - for GraphRAG embeddings
-        print("[INFO] Creating vector store containers...")
+        print("[INFO] Case-specific containers will be created dynamically per case")
+        print("[SUCCESS] General containers initialized successfully")
+    
+    def create_case_specific_containers(self, case_id: str):
+        """Create case-specific containers for a given case_id."""
+        print(f"[INFO] Creating case-specific containers for case: {case_id}")
+        
+        # Input container - stores input documents for this case
+        input_container_name = f"input_{case_id}"
+        print(f"[INFO] Creating '{input_container_name}' container...")
+        self.input_container = self.database.create_container_if_not_exists(
+            id=input_container_name,
+            partition_key=PartitionKey(path="/caseid")
+        )
+        print(f"[SUCCESS] Input container '{input_container_name}' ready")
+        
+        # Output container - stores graph data AND vectors for this case
+        output_container_name = f"output_{case_id}"
+        print(f"[INFO] Creating '{output_container_name}' container...")
+        self.output_container = self.database.create_container_if_not_exists(
+            id=output_container_name,
+            partition_key=PartitionKey(path="/caseid")
+        )
+        print(f"[SUCCESS] Output container '{output_container_name}' ready")
+        
+        # Cache container - stores LLM cache for this case
+        cache_container_name = f"cache_{case_id}"
+        print(f"[INFO] Creating '{cache_container_name}' container...")
+        self.cache_container = self.database.create_container_if_not_exists(
+            id=cache_container_name,
+            partition_key=PartitionKey(path="/caseid")
+        )
+        print(f"[SUCCESS] Cache container '{cache_container_name}' ready")
+        
+        # Logs container - stores processing logs for this case
+        logs_container_name = f"logs_{case_id}"
+        print(f"[INFO] Creating '{logs_container_name}' container...")
+        self.logs_container = self.database.create_container_if_not_exists(
+            id=logs_container_name,
+            partition_key=PartitionKey(path="/caseid")
+        )
+        print(f"[SUCCESS] Logs container '{logs_container_name}' ready")
+        
+        # Vector store containers - for GraphRAG embeddings (case-specific)
+        print(f"[INFO] Creating case-specific vector store containers for case: {case_id}")
         
         # Entity description embeddings
+        entity_vector_container = f"output_{case_id}_entity-description"
         self.database.create_container_if_not_exists(
-            id="output-entity-description",
+            id=entity_vector_container,
             partition_key=PartitionKey(path="/id")
         )
-        print("[SUCCESS] Entity description vector container ready")
+        print(f"[SUCCESS] Entity description vector container '{entity_vector_container}' ready")
         
         # Community full content embeddings  
+        community_vector_container = f"output_{case_id}_community-full_content"
         self.database.create_container_if_not_exists(
-            id="output-community-full_content",
+            id=community_vector_container,
             partition_key=PartitionKey(path="/id")
         )
-        print("[SUCCESS] Community content vector container ready")
+        print(f"[SUCCESS] Community content vector container '{community_vector_container}' ready")
         
         # Text unit embeddings
+        text_unit_vector_container = f"output_{case_id}_text_unit-text"
         self.database.create_container_if_not_exists(
-            id="output-text_unit-text",
+            id=text_unit_vector_container,
             partition_key=PartitionKey(path="/id")
         )
-        print("[SUCCESS] Text unit vector container ready")
+        print(f"[SUCCESS] Text unit vector container '{text_unit_vector_container}' ready")
         
-        print("[SUCCESS] All containers initialized successfully")
+        print(f"[SUCCESS] All case-specific containers for case '{case_id}' initialized successfully")
 
 
 # Global instance
