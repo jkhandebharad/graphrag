@@ -350,9 +350,58 @@ class OutputManager:
         except Exception as e:
             return {"status": "error", "error": str(e)}
     
+    def deduplicate_vector_embeddings(self, case_id: str) -> Dict[str, Any]:
+        """
+        Remove raw vector embeddings that have final versions with same text content.
+        """
+        try:
+            # Get vector store containers for this case
+            vector_containers = [
+                f"output_{case_id}-entity-description",
+                f"output_{case_id}-community-full_content", 
+                f"output_{case_id}-text_unit-text"
+            ]
+            
+            total_duplicates_removed = 0
+            
+            for container_name in vector_containers:
+                try:
+                    container = self.manager.database.get_container_client(container_name)
+                    
+                    # Query all embeddings
+                    query = "SELECT * FROM c"
+                    embeddings = list(container.query_items(query, enable_cross_partition_query=True))
+                    
+                    # Separate raw (numeric ID) from final (UUID ID)
+                    raw_embeddings = [e for e in embeddings if e["id"].isdigit()]
+                    final_embeddings = [e for e in embeddings if not e["id"].isdigit()]
+                    
+                    # Find duplicates by text content
+                    final_texts = {e["text"]: e for e in final_embeddings}
+                    duplicates_to_remove = []
+                    
+                    for raw_emb in raw_embeddings:
+                        if raw_emb["text"] in final_texts:
+                            duplicates_to_remove.append(raw_emb["id"])
+                    
+                    # Delete duplicate raw embeddings
+                    for doc_id in duplicates_to_remove:
+                        container.delete_item(item=doc_id, partition_key=doc_id)
+                    
+                    total_duplicates_removed += len(duplicates_to_remove)
+                    
+                except Exception as container_error:
+                    # Container might not exist yet, skip it
+                    continue
+                    
+            return {"status": "success", "duplicates_removed": total_duplicates_removed}
+            
+        except Exception as e:
+            return {"status": "error", "error": str(e)}
+    
     def deduplicate_raw_data(self, case_id: str) -> Dict[str, Any]:
         """
-        Remove duplicate raw entities and relationships by comparing with final versions.
+        Remove duplicate raw entities, relationships, and vector embeddings by comparing with final versions.
         This is the main method to call after GraphRAG indexing is complete.
         """
         # Deduplicate entities
@@ -361,14 +410,22 @@ class OutputManager:
         # Deduplicate relationships
         relationship_result = self.deduplicate_relationships(case_id)
         
+        # Deduplicate vector embeddings
+        vector_result = self.deduplicate_vector_embeddings(case_id)
+        
         # Summary
-        total_removed = entity_result.get("duplicates_removed", 0) + relationship_result.get("duplicates_removed", 0)
+        total_removed = (
+            entity_result.get("duplicates_removed", 0) + 
+            relationship_result.get("duplicates_removed", 0) +
+            vector_result.get("duplicates_removed", 0)
+        )
         
         return {
             "status": "success",
             "case_id": case_id,
             "entities": entity_result,
             "relationships": relationship_result,
+            "vector_embeddings": vector_result,
             "total_duplicates_removed": total_removed
         }
     
