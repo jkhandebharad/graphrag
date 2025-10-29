@@ -68,7 +68,7 @@ class CosmosDBManager:
         print(f"[INFO] Creating '{input_container_name}' container...")
         self.input_container = self.database.create_container_if_not_exists(
             id=input_container_name,
-            partition_key=PartitionKey(path="/caseid")
+            partition_key=PartitionKey(path="/id")
         )
         print(f"[SUCCESS] Input container '{input_container_name}' ready")
         
@@ -77,7 +77,7 @@ class CosmosDBManager:
         print(f"[INFO] Creating '{output_container_name}' container...")
         self.output_container = self.database.create_container_if_not_exists(
             id=output_container_name,
-            partition_key=PartitionKey(path="/caseid")
+            partition_key=PartitionKey(path="/id")
         )
         print(f"[SUCCESS] Output container '{output_container_name}' ready")
         
@@ -86,7 +86,7 @@ class CosmosDBManager:
         print(f"[INFO] Creating '{cache_container_name}' container...")
         self.cache_container = self.database.create_container_if_not_exists(
             id=cache_container_name,
-            partition_key=PartitionKey(path="/caseid")
+            partition_key=PartitionKey(path="/id")
         )
         print(f"[SUCCESS] Cache container '{cache_container_name}' ready")
         
@@ -95,36 +95,32 @@ class CosmosDBManager:
         print(f"[INFO] Creating '{logs_container_name}' container...")
         self.logs_container = self.database.create_container_if_not_exists(
             id=logs_container_name,
-            partition_key=PartitionKey(path="/caseid")
+            partition_key=PartitionKey(path="/id")
         )
         print(f"[SUCCESS] Logs container '{logs_container_name}' ready")
         
-        # Vector store containers - for GraphRAG embeddings (case-specific)
+        # Create vector store containers with case-specific names that match GraphRAG's expectations
         print(f"[INFO] Creating case-specific vector store containers for case: {case_id}")
         
-        # Entity description embeddings
-        entity_vector_container = f"output_{case_id}_entity-description"
-        self.database.create_container_if_not_exists(
-            id=entity_vector_container,
-            partition_key=PartitionKey(path="/id")
-        )
-        print(f"[SUCCESS] Entity description vector container '{entity_vector_container}' ready")
+        # Define only the 3 vector store containers that GraphRAG actually uses
+        # GraphRAG calls create_index_name("output", "entity.description") -> "output_5678-entity-description"
+        vector_containers = [
+            f"output_{case_id}-entity-description",
+            f"output_{case_id}-community-full_content",
+            f"output_{case_id}-text_unit-text"
+        ]
         
-        # Community full content embeddings  
-        community_vector_container = f"output_{case_id}_community-full_content"
-        self.database.create_container_if_not_exists(
-            id=community_vector_container,
-            partition_key=PartitionKey(path="/id")
-        )
-        print(f"[SUCCESS] Community content vector container '{community_vector_container}' ready")
+        for container_name in vector_containers:
+            try:
+                self.database.create_container_if_not_exists(
+                    id=container_name,
+                    partition_key=PartitionKey(path="/id")
+                )
+                print(f"[SUCCESS] Vector container '{container_name}' ready")
+            except Exception as e:
+                print(f"[WARNING] Failed to create vector container '{container_name}': {e}")
         
-        # Text unit embeddings
-        text_unit_vector_container = f"output_{case_id}_text_unit-text"
-        self.database.create_container_if_not_exists(
-            id=text_unit_vector_container,
-            partition_key=PartitionKey(path="/id")
-        )
-        print(f"[SUCCESS] Text unit vector container '{text_unit_vector_container}' ready")
+        print(f"[DEBUG] Created vector containers: {vector_containers}")
         
         print(f"[SUCCESS] All case-specific containers for case '{case_id}' initialized successfully")
 

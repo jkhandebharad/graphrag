@@ -18,9 +18,7 @@ class InputManager:
         self.manager = None  # Will be set by get_firm_managers()
         self.container = None  # Will be set by get_firm_managers()
     
-    def _normalize_caseid(self, case_id: str) -> str:
-        """Normalize case_id for partition key (numeric cases get .txt extension)."""
-        return f"{case_id}.txt" if case_id.isdigit() else case_id
+    # No longer needed - using /id as partition key in case-specific containers
 
     # ==========================================================
     #  1️⃣ Store Binary Document (e.g., PDF before OCR)
@@ -41,8 +39,7 @@ class InputManager:
 
         doc = {
             "id": f"input-{case_id}-{document_id}",
-            "caseid": self._normalize_caseid(case_id),  # Partition key - normalized with .txt for numeric cases
-            "case_id": case_id,   # Original case_id for queries/metadata
+            "case_id": case_id,   # Keep for queries/metadata
             "firm_id": firm_id,
             "document_id": document_id,
             "filename": filename,
@@ -86,8 +83,7 @@ class InputManager:
         # Store individual document (GraphRAG will read directly from this)
         doc = {
             "id": safe_filename,  # Use filename as document ID
-            "caseid": safe_filename,  # Use id as partition key for GraphRAG compatibility
-            "case_id": case_id,   # Original case_id for queries/metadata
+            "case_id": case_id,   # Keep for queries/metadata
             "document_id": document_id,
             "filename": filename,
             "original_filename": original_filename or filename,

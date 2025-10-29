@@ -16,9 +16,7 @@ class LogsManager:
         self.manager = None  # Will be set by get_firm_managers()
         self.container = None  # Will be set by get_firm_managers()
     
-    def _normalize_caseid(self, case_id: str) -> str:
-        """Normalize case_id for partition key (numeric cases get .txt extension)."""
-        return f"{case_id}.txt" if case_id.isdigit() else case_id
+    # No longer needed - using /id as partition key in case-specific containers
     
     def log(
         self,
@@ -45,11 +43,9 @@ class LogsManager:
         timestamp = datetime.utcnow()
         
         # CosmosDB IDs cannot contain / : # ? or \ characters
-        caseid = self._normalize_caseid(case_id)
         doc = {
             "id": f"logs-{case_id}-{timestamp.strftime('%Y%m%d%H%M%S')}-{log_id}",
-            "caseid": caseid,  # Partition key
-            "case_id": case_id,  # Original for queries/metadata
+            "case_id": case_id,  # Keep for metadata/queries
             "log_id": log_id,
             "timestamp": timestamp.isoformat(),
             "level": level,
@@ -111,7 +107,6 @@ class LogsManager:
         items = self.container.query_items(
             query=query,
             parameters=params,
-            partition_key=self._normalize_caseid(case_id),
             enable_cross_partition_query=False,
             max_item_count=limit
         )
@@ -136,7 +131,6 @@ class LogsManager:
                 {"name": "@case_id", "value": case_id},
                 {"name": "@cutoff_time", "value": cutoff_time}
             ],
-            partition_key=self._normalize_caseid(case_id),
             enable_cross_partition_query=False
         )
         
@@ -149,13 +143,12 @@ class LogsManager:
         items = self.container.query_items(
             query=query,
             parameters=[{"name": "@case_id", "value": case_id}],
-            partition_key=self._normalize_caseid(case_id),
             enable_cross_partition_query=False
         )
         
         for item in items:
             try:
-                self.container.delete_item(item=item["id"], partition_key=case_id)
+                self.container.delete_item(item=item["id"], partition_key=item["id"])
             except CosmosResourceNotFoundError:
                 pass
     

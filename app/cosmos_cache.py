@@ -16,9 +16,7 @@ class CacheManager:
         self.manager = None  # Will be set by get_firm_managers()
         self.container = None  # Will be set by get_firm_managers()
     
-    def _normalize_caseid(self, case_id: str) -> str:
-        """Normalize case_id for partition key (numeric cases get .txt extension)."""
-        return f"{case_id}.txt" if case_id.isdigit() else case_id
+    # No longer needed - using /id as partition key in case-specific containers
     
     def store_cache_entry(
         self,
@@ -42,11 +40,9 @@ class CacheManager:
             The stored cache document
         """
         # CosmosDB IDs cannot contain / : # ? or \ characters
-        caseid = self._normalize_caseid(case_id)
         doc = {
             "id": f"cache-{case_id}-{cache_type}-{cache_key}",
-            "caseid": caseid,  # Partition key
-            "case_id": case_id,  # Original for queries/metadata
+            "case_id": case_id,  # Keep for metadata/queries
             "cache_key": cache_key,
             "cache_type": cache_type,
             "content": content,
@@ -74,8 +70,8 @@ class CacheManager:
             The cache document or None if not found
         """
         try:
-            doc_id = f"cache/{case_id}/{cache_type}/{cache_key}"
-            return self.container.read_item(item=doc_id, partition_key=self._normalize_caseid(case_id))
+            doc_id = f"cache-{case_id}-{cache_type}-{cache_key}"
+            return self.container.read_item(item=doc_id, partition_key=doc_id)
         except CosmosResourceNotFoundError:
             return None
     
@@ -111,7 +107,6 @@ class CacheManager:
         items = self.container.query_items(
             query=query,
             parameters=params,
-            partition_key=self._normalize_caseid(case_id),
             enable_cross_partition_query=False
         )
         
@@ -120,8 +115,8 @@ class CacheManager:
     def delete_cache_entry(self, case_id: str, cache_type: str, cache_key: str):
         """Delete a specific cache entry."""
         try:
-            doc_id = f"cache/{case_id}/{cache_type}/{cache_key}"
-            self.container.delete_item(item=doc_id, partition_key=case_id)
+            doc_id = f"cache-{case_id}-{cache_type}-{cache_key}"
+            self.container.delete_item(item=doc_id, partition_key=doc_id)
         except CosmosResourceNotFoundError:
             pass
     
@@ -136,7 +131,7 @@ class CacheManager:
         entries = self.list_cache_entries(case_id, cache_type)
         for entry in entries:
             try:
-                self.container.delete_item(item=entry["id"], partition_key=case_id)
+                self.container.delete_item(item=entry["id"], partition_key=entry["id"])
             except CosmosResourceNotFoundError:
                 pass
     

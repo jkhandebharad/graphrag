@@ -408,7 +408,13 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         config_dict["input"]["storage"]["container_name"] = f"input_{case_id}"
         config_dict["output"]["container_name"] = f"output_{case_id}"
         config_dict["cache"]["container_name"] = f"cache_{case_id}"
-        config_dict["vector_store"]["default_vector_store"]["container_name"] = f"output_{case_id}"
+        # Set vector store container name to "output" so GraphRAG creates correct index names
+        # GraphRAG will create: output-entity-description, output-community-full_content, etc.
+        # But we need to override the actual container creation to use case-specific names
+        config_dict["vector_store"]["default_vector_store"]["container_name"] = "output"
+        
+        # Add case_id to vector store config for our custom vector store
+        config_dict["vector_store"]["default_vector_store"]["case_id"] = case_id
         
         print(f"[CONFIG] CosmosDB native configuration:")
         print(f"   Input:  {config_dict['input']['storage']['container_name']} (filter: case_id={case_id})")
@@ -418,11 +424,37 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         print(f"   Logs:   {config_dict['reporting']['base_dir']} (persistent)")
         print(f"[INFO] GraphRAG will read/write directly from/to CosmosDB")
         
+        # Patch GraphRAG's create_index_name function BEFORE creating config
+        from graphrag.config.embeddings import create_index_name as original_create_index_name
+        
+        def case_specific_create_index_name(container_name: str, embedding_name: str, validate: bool = True) -> str:
+            """
+            Create case-specific index name by appending case_id to the container name.
+            """
+            # Add case_id to container name
+            case_specific_container = f"{container_name}_{case_id}"
+            # Call original function with case-specific container name
+            result = original_create_index_name(case_specific_container, embedding_name, validate)
+            print(f"[VECTOR] create_index_name('{container_name}', '{embedding_name}') -> '{result}'")
+            return result
+        
+        # Replace the original function in ALL modules that might import it
+        import graphrag.config.embeddings
+        graphrag.config.embeddings.create_index_name = case_specific_create_index_name
+        
+        # Also patch in embed_text module where it's actually called
+        import graphrag.index.operations.embed_text.embed_text
+        graphrag.index.operations.embed_text.embed_text.create_index_name = case_specific_create_index_name
+        
+        # Patch in utils.api module as well
+        import graphrag.utils.api
+        graphrag.utils.api.create_index_name = case_specific_create_index_name
+        
         # Create GraphRAG config with proper root directory for resolving relative paths
         # RAG_ROOT allows GraphRAG to resolve prompt paths like "prompts/extract_graph.txt"
         config_obj = create_graphrag_config(config_dict, RAG_ROOT)
         
-        # Run GraphRAG indexing (reads/writes directly from/to CosmosDB)2
+        # Run GraphRAG indexing (reads/writes directly from/to CosmosDB)
         print(f"[START] Starting GraphRAG indexing with native CosmosDB...")
         firm_logs_manager.info(case_id, "Running GraphRAG indexing (native CosmosDB)", "indexing")
         
@@ -436,6 +468,9 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         text_docs = firm_input_manager.list_documents(case_id, text_only=True)
         for doc in text_docs:
             firm_input_manager.mark_as_indexed(case_id, doc["document_id"])
+        
+        # Remove duplicate raw entities and relationships
+        dedup_result = firm_output_manager.deduplicate_raw_data(case_id)
         
         print(f"[SUCCESS] All data uploaded to CosmosDB successfully!")
         firm_logs_manager.info(case_id, "Indexing completed successfully", "indexing")
