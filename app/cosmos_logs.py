@@ -54,7 +54,16 @@ class LogsManager:
             "metadata": metadata or {}
         }
         
-        return self.container.create_item(doc)
+        # Check if container is initialized before logging
+        if self.container is None:
+            print(f"[LOG {level}] [{source or 'system'}] {message}")
+            return None  # Can't log if container not initialized
+        
+        try:
+            return self.container.create_item(doc)
+        except Exception as e:
+            print(f"[LOG ERROR] Failed to log to CosmosDB: {e}")
+            return None
     
     def info(self, case_id: str, message: str, source: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None):
         """Log INFO level message."""

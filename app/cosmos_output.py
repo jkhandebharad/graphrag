@@ -6,8 +6,11 @@ from typing import Optional, List, Dict, Any
 from datetime import datetime
 from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from app.cosmos_client import get_cosmos_manager
+from graphrag.utils.storage import load_table_from_storage
+from graphrag.storage.cosmosdb_pipeline_storage import CosmosDBPipelineStorage
 import pandas as pd
 import json
+import os
 
 
 class OutputManager:
@@ -21,54 +24,9 @@ class OutputManager:
 
     # ==================== Graph Data Methods ====================
 
-    def store_graph_data(
-        self,
-        case_id: str,
-        data_type: str,
-        data: Any,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
-        """
-        Store graph data (entities, relationships, communities, etc.).
-        In case-specific containers, entities with the same title are overwritten
-        instead of creating duplicates.
-        """
-        # Convert to native Python objects
-        if isinstance(data, pd.DataFrame):
-            data_dict = json.loads(data.to_json(orient='records'))
-        elif isinstance(data, list):
-            data_dict = data
-        else:
-            data_dict = data
-
-        # === Special Handling for Entities ===
-        if data_type == "entities" and isinstance(data_dict, list):
-            # Store entities as a single document (like other graph data types)
-            # This ensures final entities overwrite raw entities properly
-            doc = {
-                "id": f"output-{case_id}-{data_type}",
-                "case_id": case_id,  # Keep for metadata/queries
-                "type": data_type,
-                "data": data_dict,
-                "created_at": datetime.utcnow().isoformat(),
-                "metadata": metadata or {}
-            }
-            
-            print(f"[INFO] Storing {len(data_dict)} entities for case {case_id}")
-            return self.container.upsert_item(doc)
-
-        # === Default Handling for Non-Entity Graph Data ===
-        doc = {
-            "id": f"output-{case_id}-{data_type}",
-            "case_id": case_id,  # Keep for metadata/queries
-            "type": data_type,
-            "data": data_dict,
-            "created_at": datetime.utcnow().isoformat(),
-            "metadata": metadata or {}
-        }
-
-        return self.container.upsert_item(doc)
-
+    # Note: GraphRAG handles all writes directly through CosmosDBPipelineStorage
+    # We don't need store_graph_data() - GraphRAG writes entities/relationships individually
+    
     def get_graph_data(self, case_id: str, data_type: str) -> Optional[Dict[str, Any]]:
         """Retrieve graph data by type."""
         try:
@@ -77,12 +35,60 @@ class OutputManager:
         except CosmosResourceNotFoundError:
             return None
 
-    def get_graph_data_as_dataframe(self, case_id: str, data_type: str) -> Optional[pd.DataFrame]:
-        """Retrieve graph data as a pandas DataFrame."""
-        doc = self.get_graph_data(case_id, data_type)
-        if doc and "data" in doc:
-            return pd.DataFrame(doc["data"])
-        return None
+    def _get_graphrag_storage(self, case_id: str, firm_id: str) -> CosmosDBPipelineStorage:
+        """
+        Create a GraphRAG CosmosDBPipelineStorage instance for querying.
+        Uses GraphRAG's native storage interface to query data.
+        
+        Args:
+            case_id: Case identifier for case-specific container
+            firm_id: Firm identifier to construct database name (graphrag_{firm_id})
+        """
+        connection_string = os.getenv("COSMOS_CONNECTION_STRING")
+        
+        if not connection_string:
+            # Build connection string from endpoint and key if not available
+            endpoint = os.getenv("COSMOS_ENDPOINT")
+            key = os.getenv("COSMOS_KEY")
+            if endpoint and key:
+                # Format: AccountEndpoint=...;AccountKey=...
+                connection_string = f"AccountEndpoint={endpoint};AccountKey={key};"
+            else:
+                raise ValueError("Either COSMOS_CONNECTION_STRING or COSMOS_ENDPOINT+COSMOS_KEY must be set")
+        
+        # Database name follows pattern: graphrag_{firm_id}
+        database_name = f"graphrag_{firm_id}"
+        
+        # Container name follows the pattern: output_{case_id}
+        container_name = f"output_{case_id}"
+        
+        return CosmosDBPipelineStorage(
+            database_name=database_name,
+            container_name=container_name,
+            connection_string=connection_string
+        )
+    
+    async def get_graph_data_as_dataframe(self, case_id: str, data_type: str, firm_id: str) -> Optional[pd.DataFrame]:
+        """
+        Retrieve graph data as a pandas DataFrame using GraphRAG's native storage utility.
+        
+        Uses GraphRAG's load_table_from_storage() which:
+        - Queries individual documents (entities:0, entities:uuid, etc.)
+        - Combines them into a DataFrame
+        - Handles all GraphRAG storage patterns correctly
+        
+        Args:
+            case_id: Case identifier for case-specific container
+            data_type: Type of graph data (entities, relationships, etc.)
+            firm_id: Firm identifier to construct database name
+        """
+        try:
+            storage = self._get_graphrag_storage(case_id, firm_id)
+            # GraphRAG's utility handles the querying and DataFrame conversion
+            return await load_table_from_storage(name=data_type, storage=storage)
+        except Exception as e:
+            print(f"[ERROR] Failed to load {data_type} from CosmosDB using GraphRAG storage: {e}")
+            return None
 
     def list_graph_data_types(self, case_id: str) -> List[str]:
         """List all available graph data types for a case."""
@@ -148,18 +154,12 @@ class OutputManager:
         return count
 
     # ==================== Stats and Metadata ====================
-
-    def store_stats(self, case_id: str, stats: Dict[str, Any]) -> Dict[str, Any]:
-        """Store indexing statistics."""
-        return self.store_graph_data(case_id, "stats", stats)
-
+    # Note: GraphRAG stores stats/metadata through its own storage interface
+    # These get methods remain for potential future use
+    
     def get_stats(self, case_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve indexing statistics."""
         return self.get_graph_data(case_id, "stats")
-
-    def store_metadata(self, case_id: str, metadata: Dict[str, Any]) -> Dict[str, Any]:
-        """Store index metadata."""
-        return self.store_graph_data(case_id, "metadata", metadata)
 
     def get_metadata(self, case_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve index metadata."""
