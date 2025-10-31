@@ -123,6 +123,113 @@ class CosmosDBManager:
         print(f"[DEBUG] Created vector containers: {vector_containers}")
         
         print(f"[SUCCESS] All case-specific containers for case '{case_id}' initialized successfully")
+    
+    def check_case_containers_exist(self, case_id: str) -> bool:
+        """
+        Check if case-specific containers already exist AND have indexed data.
+        Incremental indexing should only happen if output container has final entities/relationships.
+        
+        Args:
+            case_id: Case identifier to check
+            
+        Returns:
+            True if containers exist AND output container has indexed data (final entities), False otherwise
+        """
+        if not self.database:
+            return False
+        
+        required_containers = [
+            f"input_{case_id}",
+            f"output_{case_id}",
+            f"cache_{case_id}",
+            f"logs_{case_id}"
+        ]
+        
+        # First, check if all containers exist
+        for container_name in required_containers:
+            try:
+                container = self.database.get_container_client(container_name)
+                # Try to read container properties to verify it exists
+                container.read()
+            except CosmosResourceNotFoundError:
+                # Container doesn't exist - this is a first run
+                print(f"[INFO] Container '{container_name}' does not exist - this is a first run (full indexing)")
+                return False
+            except Exception as e:
+                print(f"[WARNING] Error checking container '{container_name}': {e}")
+                return False
+        
+        # All containers exist, now check if output container has actual indexed data
+        # Check for final entities (with UUID IDs) - these indicate completed indexing
+        # Final entities have UUIDs like "entities:51d4a181-c2e7-46f9-9896-81c784dbacec"
+        # Raw entities have numeric IDs like "entities:0", "entities:1"
+        output_container_name = f"output_{case_id}"
+        try:
+            output_container = self.database.get_container_client(output_container_name)
+            
+            # Query for entities - check if any have UUID pattern (contain hyphens)
+            # UUID format: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx (has 4 hyphens)
+            query = "SELECT TOP 10 c.id FROM c WHERE STARTSWITH(c.id, 'entities:')"
+            results = list(output_container.query_items(
+                query=query,
+                enable_cross_partition_query=True
+            ))
+            
+            if not results:
+                # No entities at all - this is a first run
+                print(f"[INFO] Output container has no entities - this is a first run (full indexing)")
+                return False
+            
+            # Check if any entity has UUID pattern (contains hyphens after 'entities:')
+            # UUID IDs are much longer and contain hyphens
+            has_final_entities = False
+            for item in results:
+                entity_id = item.get("id", "")
+                if ":" in entity_id:
+                    id_part = entity_id.split(":", 1)[1]
+                    # Check if it's a UUID (contains hyphens) or just numeric
+                    # UUIDs contain hyphens, numeric IDs don't
+                    if "-" in id_part and len(id_part) > 20:  # UUIDs are long and have hyphens
+                        has_final_entities = True
+                        break
+            
+            if has_final_entities:
+                # Found final entities - indexing has been completed before
+                print(f"[INFO] Output container has indexed data (final entities with UUIDs found) - incremental indexing will be used")
+                return True
+            else:
+                # Only raw entities (numeric IDs) or no entities - this is a first run
+                print(f"[INFO] Output container has no final entities (only raw/numeric IDs) - this is a first run (full indexing)")
+                return False
+                
+        except Exception as e:
+            print(f"[WARNING] Error checking for indexed data in output container: {e}")
+            # If we can't check, assume it's a first run to be safe
+            return False
+    
+    def create_update_output_container(self, case_id: str):
+        """
+        Create the update_output container for incremental indexing.
+        This container stores delta and previous data during incremental updates.
+        
+        Args:
+            case_id: Case identifier for container naming
+        """
+        if not self.database:
+            raise ValueError("Database not initialized")
+        
+        update_container_name = f"update_output_{case_id}"
+        print(f"[INFO] Creating update output container '{update_container_name}'...")
+        
+        try:
+            self.database.create_container_if_not_exists(
+                id=update_container_name,
+                partition_key=PartitionKey(path="/id")
+            )
+            print(f"[SUCCESS] Update output container '{update_container_name}' ready")
+        except Exception as e:
+            print(f"[ERROR] Failed to create update output container: {e}")
+            raise
 
 
 # Global instance

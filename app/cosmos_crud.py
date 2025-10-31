@@ -310,19 +310,51 @@ async def index_documents_for_case(case_id: str, firm_id: str):
     Index documents for a case using GraphRAG with native CosmosDB storage.
     
     This function:
-    1. Loads configuration from CosmosDB
-    2. Configures GraphRAG to read directly from CosmosDB input container
-    3. Runs GraphRAG indexing (native CosmosDB read/write)
-    4. Stores all results (graph, vectors, cache) directly to CosmosDB
-    5. Marks documents as indexed
+    1. Checks if containers exist - if yes, sets is_update_run=True for incremental indexing
+    2. If containers don't exist, creates them
+    3. Loads configuration from CosmosDB
+    4. Configures GraphRAG to read directly from CosmosDB input container
+    5. Runs GraphRAG indexing (native CosmosDB read/write)
+    6. Stores all results (graph, vectors, cache) directly to CosmosDB
+    7. For incremental indexing: merges entities/relationships from update_output to output
+    8. Marks documents as indexed
     """
+    # Create firm-specific database manager to check containers
+    firm_manager = CosmosDBManager()
+    firm_manager.database_name = f"graphrag_{firm_id}"
+    firm_manager.initialize_database()
+    
+    # Check if containers exist AND have indexed data - if yes, this is an incremental update
+    # This check verifies that output container has final entities (UUID IDs), not just raw data
+    print(f"[CHECK] Checking if case {case_id} has previous indexed data...")
+    has_indexed_data = firm_manager.check_case_containers_exist(case_id)
+    
+    # Create containers if they don't exist
+    if not has_indexed_data:
+        print(f"[INFO] ✓ First run detected for case {case_id}")
+        print(f"[INFO] Creating containers and running FULL indexing (is_update_run=False)")
+        firm_manager.create_case_specific_containers(case_id)
+        is_update_run = False  # Ensure it's set to False for first run
+    else:
+        # For incremental indexing, create update_output container
+        print(f"[INFO] ✓ Previous indexing found for case {case_id}")
+        print(f"[INFO] Creating update_output container and running INCREMENTAL indexing (is_update_run=True)")
+        firm_manager.create_update_output_container(case_id)
+        # Get existing containers (this won't recreate them, just gets references)
+        firm_manager.create_case_specific_containers(case_id)
+        is_update_run = True  # Ensure it's set to True for incremental run
+    
+    print(f"[CONFIRM] Indexing mode for case {case_id}: {'INCREMENTAL' if is_update_run else 'FULL'}")
+    
     # Get firm-specific managers
     firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
     firm_cache_manager = firm_managers['cache']
     firm_logs_manager = firm_managers['logs']      
-    firm_logs_manager.info(case_id, "Starting indexing process", "indexing")
+    
+    log_message = "Starting incremental indexing process" if is_update_run else "Starting indexing process"
+    firm_logs_manager.info(case_id, log_message, "indexing")
     
     # GraphRAG logs will be saved to ragtest/logs/{case_id}/ (persistent)
     persistent_logs_dir = Path(RAG_ROOT).resolve() / "logs" / case_id
@@ -377,18 +409,43 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         # The container names are already specified in settings.yaml
         # We only need to set the correct database names (base_dir)
         
-        # Ensure output, cache, and reporting sections exist
+        # Ensure output, cache, reporting, and update_index_output sections exist
         if "output" not in config_dict:
             config_dict["output"] = {}
         if "cache" not in config_dict:
             config_dict["cache"] = {}
         if "reporting" not in config_dict:
             config_dict["reporting"] = {}
+        if "update_index_output" not in config_dict:
+            config_dict["update_index_output"] = {}
 
         # Set database names for all storage types
         config_dict["input"]["storage"]["base_dir"] = database_name
         config_dict["output"]["base_dir"] = database_name
         config_dict["cache"]["base_dir"] = database_name
+        
+        # Get connection string for vector store and update_index_output
+        connection_string = os.getenv("COSMOS_CONNECTION_STRING")
+        if not connection_string:
+            endpoint = os.getenv("COSMOS_ENDPOINT")
+            key = os.getenv("COSMOS_KEY")
+            if endpoint and key:
+                connection_string = f"AccountEndpoint={endpoint};AccountKey={key};"
+        if not connection_string:
+            raise ValueError("COSMOS_CONNECTION_STRING or COSMOS_ENDPOINT+COSMOS_KEY must be set for indexing")
+        
+        # Configure update_index_output for CosmosDB (used ONLY during incremental indexing)
+        if is_update_run:
+            config_dict["update_index_output"]["type"] = "cosmosdb"
+            config_dict["update_index_output"]["connection_string"] = connection_string
+            config_dict["update_index_output"]["container_name"] = f"update_output_{case_id}"
+            config_dict["update_index_output"]["base_dir"] = database_name
+            config_dict["update_index_output"]["cosmosdb_account_blob_url"] = os.getenv("COSMOS_ENDPOINT")
+            print(f"[CONFIG] Incremental indexing mode: Update index output container: {config_dict['update_index_output']['container_name']} (database: {database_name})")
+        else:
+            # For full indexing, update_index_output should not be used
+            # Keep it as file type or leave it unconfigured
+            print(f"[CONFIG] Full indexing mode: Update index output not needed")
 
         # Ensure vector store uses correct database name
         if "vector_store" not in config_dict:
@@ -399,14 +456,7 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         config_dict["vector_store"]["default_vector_store"]["database_name"] = database_name
         
         # Explicitly set connection_string for vector store to avoid AAD fallback during embedding
-        connection_string = os.getenv("COSMOS_CONNECTION_STRING")
-        if not connection_string:
-            endpoint = os.getenv("COSMOS_ENDPOINT")
-            key = os.getenv("COSMOS_KEY")
-            if endpoint and key:
-                connection_string = f"AccountEndpoint={endpoint};AccountKey={key};"
-        if not connection_string:
-            raise ValueError("COSMOS_CONNECTION_STRING or COSMOS_ENDPOINT+COSMOS_KEY must be set for indexing")
+        # (connection_string was already set above, but ensure it's set for vector store)
         config_dict["vector_store"]["default_vector_store"]["connection_string"] = connection_string
         
         # Use persistent logs directory (ragtest/logs/{case_id})
@@ -437,22 +487,35 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         config_obj = create_graphrag_config(config_dict, RAG_ROOT)
         
         # Run GraphRAG indexing (reads/writes directly from/to CosmosDB)
-        print(f"[START] Starting GraphRAG indexing with native CosmosDB...")
-        firm_logs_manager.info(case_id, "Running GraphRAG indexing (native CosmosDB)", "indexing")
+        indexing_type = "incremental indexing" if is_update_run else "full indexing"
+        print(f"[START] Starting GraphRAG {indexing_type} with native CosmosDB...")
+        firm_logs_manager.info(case_id, f"Running GraphRAG {indexing_type} (native CosmosDB)", "indexing")
         
-        await build_index(config=config_obj, method=IndexingMethod.Standard, is_update_run=False)
+        await build_index(config=config_obj, method=IndexingMethod.Standard, is_update_run=is_update_run)
         
-        print(f"[DONE] GraphRAG indexing completed for case {case_id}.")
+        print(f"[DONE] GraphRAG {indexing_type} completed for case {case_id}.")
         print(f"[INFO] All data stored directly in CosmosDB by GraphRAG")
-        firm_logs_manager.info(case_id, "GraphRAG indexing completed", "indexing")
+        firm_logs_manager.info(case_id, f"GraphRAG {indexing_type} completed", "indexing")
         
-        # Mark all documents as indexed
-        text_docs = firm_input_manager.list_documents(case_id, text_only=True)
-        for doc in text_docs:
-            firm_input_manager.mark_as_indexed(case_id, doc["document_id"])
-        
-        # Remove duplicate raw entities and relationships
-        dedup_result = firm_output_manager.deduplicate_raw_data(case_id)
+        # For incremental indexing: merge entities and relationships from update_output to output
+        if is_update_run:
+            print(f"[INFO] Starting merge process for incremental indexing...")
+            firm_logs_manager.info(case_id, "Merging incremental update data", "indexing")
+            
+            # Clean raw entities and relationships from update_output before merging
+            merge_result = firm_output_manager.merge_incremental_update(case_id, firm_id)
+            
+            print(f"[SUCCESS] Merge completed: {merge_result}")
+            firm_logs_manager.info(case_id, f"Merge completed: {merge_result.get('status', 'unknown')}", "indexing")
+        else:
+            # Mark all documents as indexed (for full indexing)
+            text_docs = firm_input_manager.list_documents(case_id, text_only=True)
+            for doc in text_docs:
+                firm_input_manager.mark_as_indexed(case_id, doc["document_id"])
+            
+            # Remove duplicate raw entities and relationships
+            dedup_result = firm_output_manager.deduplicate_raw_data(case_id)
+            print(f"[INFO] Deduplication result: {dedup_result}")
         
         print(f"[SUCCESS] All data uploaded to CosmosDB successfully!")
         firm_logs_manager.info(case_id, "Indexing completed successfully", "indexing")

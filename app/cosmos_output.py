@@ -438,3 +438,128 @@ class OutputManager:
                 self.container.delete_item(item=it["id"], partition_key=it["id"])
             except CosmosResourceNotFoundError:
                 pass
+    
+    def merge_incremental_update(self, case_id: str, firm_id: str) -> Dict[str, Any]:
+        """
+        Merge entities and relationships from update_output container into output container.
+        This is called after incremental indexing completes.
+        
+        Process:
+        1. Get final entities and relationships from update_output (after GraphRAG merging)
+        2. Clean raw entities and relationships from update_output
+        3. Merge final entities and relationships into output container
+        4. Clean up update_output container
+        
+        Args:
+            case_id: Case identifier
+            firm_id: Firm identifier for database name
+            
+        Returns:
+            Dict with merge operation results
+        """
+        try:
+            # Get update_output container
+            update_container_name = f"update_output_{case_id}"
+            update_container = self.manager.database.get_container_client(update_container_name)
+            
+            print(f"[MERGE] Starting merge from {update_container_name} to output_{case_id}")
+            
+            # Get storage for update_output to read final merged data
+            storage_update = self._get_graphrag_storage_for_update(case_id, firm_id, update_container_name)
+            storage_output = self._get_graphrag_storage(case_id, firm_id)
+            
+            # GraphRAG stores merged data in output container directly, but we need to ensure
+            # raw data is cleaned from update_output. Let's clean raw entities and relationships.
+            raw_entities_removed = self._clean_raw_data_from_container(update_container, "entities:")
+            raw_relationships_removed = self._clean_raw_data_from_container(update_container, "relationships:")
+            
+            print(f"[MERGE] Cleaned {raw_entities_removed} raw entities from update_output")
+            print(f"[MERGE] Cleaned {raw_relationships_removed} raw relationships from update_output")
+            
+            # Note: GraphRAG already merges final entities/relationships to output container
+            # during the update_entities_relationships workflow, so we don't need to manually merge.
+            # We just clean up the raw data from update_output.
+            
+            return {
+                "status": "success",
+                "case_id": case_id,
+                "raw_entities_removed": raw_entities_removed,
+                "raw_relationships_removed": raw_relationships_removed,
+                "message": "Raw data cleaned from update_output. Final merged data already in output container."
+            }
+            
+        except Exception as e:
+            print(f"[ERROR] Merge failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return {
+                "status": "error",
+                "case_id": case_id,
+                "error": str(e)
+            }
+    
+    def _clean_raw_data_from_container(self, container, prefix: str) -> int:
+        """
+        Clean raw entities or relationships (numeric IDs) from a container.
+        
+        Args:
+            container: CosmosDB container to clean
+            prefix: Prefix to filter by (e.g., "entities:", "relationships:")
+            
+        Returns:
+            Number of items removed
+        """
+        removed_count = 0
+        
+        try:
+            # Query items with the prefix
+            query = f"SELECT * FROM c WHERE STARTSWITH(c.id, '{prefix}')"
+            items = list(container.query_items(
+                query=query,
+                enable_cross_partition_query=True
+            ))
+            
+            for item in items:
+                item_id = item.get("id", "")
+                if ":" in item_id:
+                    id_suffix = item_id.split(":", 1)[1]
+                    # Check if ID suffix is numeric (raw) - remove only raw data
+                    if id_suffix.isdigit():
+                        try:
+                            container.delete_item(item=item_id, partition_key=item_id)
+                            removed_count += 1
+                        except Exception as e:
+                            print(f"[WARNING] Failed to delete {item_id}: {e}")
+                            continue
+            
+        except Exception as e:
+            print(f"[WARNING] Error cleaning raw data with prefix {prefix}: {e}")
+        
+        return removed_count
+    
+    def _get_graphrag_storage_for_update(self, case_id: str, firm_id: str, container_name: str) -> CosmosDBPipelineStorage:
+        """
+        Create a GraphRAG CosmosDBPipelineStorage instance for update_output container.
+        
+        Args:
+            case_id: Case identifier
+            firm_id: Firm identifier to construct database name
+            container_name: Container name (e.g., update_output_{case_id})
+        """
+        connection_string = os.getenv("COSMOS_CONNECTION_STRING")
+        
+        if not connection_string:
+            endpoint = os.getenv("COSMOS_ENDPOINT")
+            key = os.getenv("COSMOS_KEY")
+            if endpoint and key:
+                connection_string = f"AccountEndpoint={endpoint};AccountKey={key};"
+            else:
+                raise ValueError("Either COSMOS_CONNECTION_STRING or COSMOS_ENDPOINT+COSMOS_KEY must be set")
+        
+        database_name = f"graphrag_{firm_id}"
+        
+        return CosmosDBPipelineStorage(
+            database_name=database_name,
+            container_name=container_name,
+            connection_string=connection_string
+        )
