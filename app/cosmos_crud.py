@@ -10,7 +10,6 @@ from fastapi import UploadFile
 from app.model import Document
 from app.cosmos_input import InputManager
 from app.cosmos_output import OutputManager
-from app.cosmos_cache import CacheManager
 from app.cosmos_logs import LogsManager
 from app.cosmos_config import config_manager
 # from app.cosmos_db import get_next_document_id  # No longer needed - using firm-specific managers
@@ -37,7 +36,6 @@ pytesseract.pytesseract.tesseract_cmd = os.path.join(TESSERACT_PATH, "tesseract.
 # Initialize managers (default - will be overridden per firm)
 input_manager = InputManager()
 output_manager = OutputManager()
-cache_manager = CacheManager()
 logs_manager = LogsManager()
 
 # Cache for firm managers to avoid re-initialization
@@ -68,10 +66,6 @@ def get_firm_managers(firm_id: str, case_id: str = None):
         firm_output_manager.manager = firm_manager
         firm_output_manager.container = firm_manager.output_container
         
-        firm_cache_manager = CacheManager()
-        firm_cache_manager.manager = firm_manager
-        firm_cache_manager.container = firm_manager.cache_container
-        
         # Initialize LogsManager
         firm_logs_manager = LogsManager()
         firm_logs_manager.manager = firm_manager
@@ -80,7 +74,6 @@ def get_firm_managers(firm_id: str, case_id: str = None):
         _firm_managers_cache[cache_key] = {
             'input': firm_input_manager,
             'output': firm_output_manager,
-            'cache': firm_cache_manager,
             'logs': firm_logs_manager
         }
     
@@ -152,7 +145,6 @@ async def save_document(file: UploadFile, case_id: str, firm_id: str) -> Documen
     firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
-    firm_cache_manager = firm_managers['cache']
     firm_logs_manager = firm_managers['logs']    
     try:
         firm_logs_manager.info(case_id, f"Starting document upload: {file.filename}", "upload")
@@ -336,10 +328,10 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         firm_manager.create_case_specific_containers(case_id)
         is_update_run = False  # Ensure it's set to False for first run
     else:
-        # For incremental indexing, create update_output container
+        # For incremental indexing, delta and previous containers will be created lazily
         print(f"[INFO] ✓ Previous indexing found for case {case_id}")
-        print(f"[INFO] Creating update_output container and running INCREMENTAL indexing (is_update_run=True)")
-        firm_manager.create_update_output_container(case_id)
+        print(f"[INFO] Running INCREMENTAL indexing (is_update_run=True)")
+        print(f"[INFO] Delta and previous containers will be created automatically when data is written")
         # Get existing containers (this won't recreate them, just gets references)
         firm_manager.create_case_specific_containers(case_id)
         is_update_run = True  # Ensure it's set to True for incremental run
@@ -350,7 +342,6 @@ async def index_documents_for_case(case_id: str, firm_id: str):
     firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
-    firm_cache_manager = firm_managers['cache']
     firm_logs_manager = firm_managers['logs']      
     
     log_message = "Starting incremental indexing process" if is_update_run else "Starting indexing process"
@@ -499,14 +490,15 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         
         # For incremental indexing: merge entities and relationships from update_output to output
         if is_update_run:
-            print(f"[INFO] Starting merge process for incremental indexing...")
-            firm_logs_manager.info(case_id, "Merging incremental update data", "indexing")
+            print(f"[INFO] Cleaning up raw data artifacts from incremental indexing...")
+            firm_logs_manager.info(case_id, "Cleaning up raw data after incremental indexing", "indexing")
             
-            # Clean raw entities and relationships from update_output before merging
-            merge_result = firm_output_manager.merge_incremental_update(case_id, firm_id)
+            # GraphRAG update workflows automatically copy final data to output container
+            # We only need to clean up raw (numeric ID) entities, relationships, and embeddings
+            cleanup_result = firm_output_manager.cleanup_raw_data_after_incremental_update(case_id, firm_id)
             
-            print(f"[SUCCESS] Merge completed: {merge_result}")
-            firm_logs_manager.info(case_id, f"Merge completed: {merge_result.get('status', 'unknown')}", "indexing")
+            print(f"[SUCCESS] Cleanup completed: {cleanup_result}")
+            firm_logs_manager.info(case_id, f"Cleanup completed: {cleanup_result.get('status', 'unknown')}", "indexing")
         else:
             # Mark all documents as indexed (for full indexing)
             text_docs = firm_input_manager.list_documents(case_id, text_only=True)
@@ -538,7 +530,6 @@ async def get_answer(query_text: str, case_id: str, firm_id: str):
     firm_managers = get_firm_managers(firm_id, case_id)
     firm_input_manager = firm_managers['input']
     firm_output_manager = firm_managers['output']
-    firm_cache_manager = firm_managers['cache']
     firm_logs_manager = firm_managers['logs']      
     try:
         firm_logs_manager.info(case_id, f"Query: {query_text}", "query")

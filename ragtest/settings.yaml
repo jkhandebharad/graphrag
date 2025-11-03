@@ -167,7 +167,7 @@ vector_store:
     # - Unified storage for all case data (graph + vectors)
 
 ### Workflow settings ###
-workflows:
+workflows: 
   - load_input_documents
   - create_base_text_units
   - create_final_documents
@@ -178,6 +178,7 @@ workflows:
   - create_final_text_units
   - create_community_reports
   - generate_text_embeddings
+  
 
 
 embed_text:

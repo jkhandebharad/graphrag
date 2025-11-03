@@ -5,7 +5,6 @@
 
 import json
 import logging
-import re
 import time
 from collections.abc import AsyncIterable
 from dataclasses import asdict
@@ -161,7 +160,33 @@ async def _copy_previous_output(
     storage: PipelineStorage,
     copy_storage: PipelineStorage,
 ):
-    for file in storage.find(re.compile(r"\.parquet$")):
-        base_name = file[0].replace(".parquet", "")
-        table = await load_table_from_storage(base_name, storage)
-        await write_table_to_storage(table, base_name, copy_storage)
+    """Copy previous output tables to the copy storage.
+    
+    For CosmosDB storage, tables are stored as individual items with prefixes
+    (e.g., 'documents:hash...'), not as single '.parquet' files. This function
+    explicitly copies known table names to ensure all previous data is available
+    for delta comparison during incremental indexing.
+    """
+    # Known table names that need to be copied for incremental indexing
+    known_tables = [
+        "documents",
+        "text_units",
+        "entities",
+        "relationships",
+        "communities",
+        "community_reports",
+        "covariates",
+    ]
+    
+    for table_name in known_tables:
+        try:
+            table = await load_table_from_storage(table_name, storage)
+            await write_table_to_storage(table, table_name, copy_storage)
+            logger.info("Copied %s table from previous output (%d rows)", table_name, len(table))
+        except ValueError:
+            # Table doesn't exist, skip it (this is normal for first runs or optional tables)
+            logger.debug("Table %s not found in previous output, skipping", table_name)
+            continue
+        except Exception as e:
+            logger.warning("Error copying table %s: %s", table_name, e)
+            continue

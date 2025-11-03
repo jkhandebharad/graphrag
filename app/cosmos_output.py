@@ -11,6 +11,7 @@ from graphrag.storage.cosmosdb_pipeline_storage import CosmosDBPipelineStorage
 import pandas as pd
 import json
 import os
+import re
 
 
 class OutputManager:
@@ -439,57 +440,76 @@ class OutputManager:
             except CosmosResourceNotFoundError:
                 pass
     
-    def merge_incremental_update(self, case_id: str, firm_id: str) -> Dict[str, Any]:
+    def cleanup_raw_data_after_incremental_update(self, case_id: str, firm_id: str) -> Dict[str, Any]:
         """
-        Merge entities and relationships from update_output container into output container.
-        This is called after incremental indexing completes.
+        Clean up raw (numeric ID) entities, relationships, and embeddings after incremental indexing.
+        GraphRAG's update workflows automatically copy final data from delta to output storage,
+        so we only need to clean up raw data artifacts.
         
         Process:
-        1. Get final entities and relationships from update_output (after GraphRAG merging)
-        2. Clean raw entities and relationships from update_output
-        3. Merge final entities and relationships into output container
-        4. Clean up update_output container
+        1. Clean raw entities and relationships from delta container
+        2. Clean raw embeddings from vector store containers
         
         Args:
             case_id: Case identifier
             firm_id: Firm identifier for database name
             
         Returns:
-            Dict with merge operation results
+            Dict with cleanup operation results
         """
         try:
-            # Get update_output container
-            update_container_name = f"update_output_{case_id}"
-            update_container = self.manager.database.get_container_client(update_container_name)
+            # Find the latest delta container: update_output_{case_id}_{timestamp}_delta
+            # Since containers are created with timestamp, we need to find the latest one
+            database = self.manager.database
             
-            print(f"[MERGE] Starting merge from {update_container_name} to output_{case_id}")
+            # List all containers and find ones matching update_output_{case_id}_*_delta pattern
+            pattern = re.compile(rf"^update_output_{case_id}_(\d{{8}}-\d{{6}})_delta$")
             
-            # Get storage for update_output to read final merged data
-            storage_update = self._get_graphrag_storage_for_update(case_id, firm_id, update_container_name)
-            storage_output = self._get_graphrag_storage(case_id, firm_id)
+            containers = list(database.list_containers())
+            matching_containers = []
             
-            # GraphRAG stores merged data in output container directly, but we need to ensure
-            # raw data is cleaned from update_output. Let's clean raw entities and relationships.
-            raw_entities_removed = self._clean_raw_data_from_container(update_container, "entities:")
-            raw_relationships_removed = self._clean_raw_data_from_container(update_container, "relationships:")
+            for container in containers:
+                container_id = container['id']
+                match = pattern.match(container_id)
+                if match:
+                    timestamp = match.group(1)
+                    matching_containers.append((timestamp, container_id))
             
-            print(f"[MERGE] Cleaned {raw_entities_removed} raw entities from update_output")
-            print(f"[MERGE] Cleaned {raw_relationships_removed} raw relationships from update_output")
+            if not matching_containers:
+                return {
+                    "status": "warning",
+                    "case_id": case_id,
+                    "raw_entities_removed": 0,
+                    "raw_relationships_removed": 0,
+                    "raw_embeddings_removed": 0,
+                    "message": "No delta container found - raw data cleanup skipped"
+                }
             
-            # Note: GraphRAG already merges final entities/relationships to output container
-            # during the update_entities_relationships workflow, so we don't need to manually merge.
-            # We just clean up the raw data from update_output.
+            # Get the latest container (sort by timestamp descending)
+            matching_containers.sort(reverse=True, key=lambda x: x[0])
+            delta_container_name = matching_containers[0][1]
+            
+            delta_container = database.get_container_client(delta_container_name)
+            
+            # Clean raw entities and relationships from delta container
+            raw_entities_removed = self._clean_raw_data_from_container(delta_container, "entities:")
+            raw_relationships_removed = self._clean_raw_data_from_container(delta_container, "relationships:")
+            
+            # Clean raw embeddings from vector store containers
+            # Vector store containers store embeddings with entity/relationship IDs
+            # Need to remove embeddings that correspond to raw (numeric) entity IDs
+            raw_embeddings_removed = self._clean_raw_embeddings_from_vector_stores(case_id, firm_id)
             
             return {
                 "status": "success",
                 "case_id": case_id,
                 "raw_entities_removed": raw_entities_removed,
                 "raw_relationships_removed": raw_relationships_removed,
-                "message": "Raw data cleaned from update_output. Final merged data already in output container."
+                "raw_embeddings_removed": raw_embeddings_removed,
+                "message": f"Raw data cleaned from {delta_container_name} and vector stores. GraphRAG has already copied final data to output container."
             }
             
         except Exception as e:
-            print(f"[ERROR] Merge failed: {e}")
             import traceback
             traceback.print_exc()
             return {
@@ -536,6 +556,101 @@ class OutputManager:
             print(f"[WARNING] Error cleaning raw data with prefix {prefix}: {e}")
         
         return removed_count
+    
+    def _clean_raw_embeddings_from_vector_stores(self, case_id: str, firm_id: str) -> int:
+        """
+        Clean raw embeddings from vector store containers.
+        Raw embeddings have IDs that match raw entity IDs (numeric or entities:0, entities:1, etc.)
+        
+        During incremental indexing, new embeddings are created for merged entities.
+        Old embeddings with raw entity IDs need to be removed.
+        
+        Args:
+            case_id: Case identifier
+            firm_id: Firm identifier for database name
+            
+        Returns:
+            Total number of raw embeddings removed across all vector containers
+        """
+        total_removed = 0
+        vector_containers = [
+            f"output_{case_id}-entity-description",
+            f"output_{case_id}-community-full_content",
+            f"output_{case_id}-text_unit-text"
+        ]
+        
+        if not self.manager or not self.manager.database:
+            print(f"[WARNING] Cannot clean embeddings - manager or database not initialized")
+            return 0
+        
+        try:
+            for container_name in vector_containers:
+                try:
+                    container = self.manager.database.get_container_client(container_name)
+                    
+                    # Query all embeddings in this container
+                    # The id field is used as both document ID and partition key
+                    query = "SELECT * FROM c"
+                    embeddings = list(container.query_items(
+                        query=query,
+                        enable_cross_partition_query=True
+                    ))
+                    
+                    removed_from_container = 0
+                    
+                    for emb in embeddings:
+                        # Get the document ID (which matches the entity/relationship/text_unit ID)
+                        emb_id = emb.get("id", "")
+                        
+                        if not emb_id:
+                            continue
+                        
+                        # Check if this embedding ID corresponds to a raw entity/relationship/text_unit
+                        # Raw IDs can be:
+                        # - Numeric only: "0", "1", "2"
+                        # - With prefix: "entities:0", "relationships:1", "text_units:2"
+                        # - Final IDs are UUIDs: "entities:51d4a181-c2e7-46f9-9896-81c784dbacec"
+                        
+                        is_raw = False
+                        
+                        if ":" in emb_id:
+                            # Has prefix like "entities:0" or "entities:uuid"
+                            id_part = emb_id.split(":", 1)[1]
+                            # If purely numeric, it's raw; if has hyphens and is long (>20 chars), it's UUID (final)
+                            if id_part.isdigit():
+                                is_raw = True
+                            # UUIDs have hyphens and are 36 chars: "51d4a181-c2e7-46f9-9896-81c784dbacec"
+                            elif "-" in id_part and len(id_part) > 20:
+                                is_raw = False  # It's a UUID, keep it
+                        else:
+                            # No prefix - check if it's purely numeric (raw)
+                            if emb_id.isdigit():
+                                is_raw = True
+                        
+                        if is_raw:
+                            try:
+                                # Delete using the document ID as partition key (CosmosDB uses id field as partition key)
+                                container.delete_item(item=emb_id, partition_key=emb_id)
+                                removed_from_container += 1
+                            except Exception as e:
+                                print(f"[WARNING] Failed to delete embedding {emb_id} from {container_name}: {e}")
+                                continue
+                    
+                    if removed_from_container > 0:
+                        print(f"[MERGE] Cleaned {removed_from_container} raw embeddings from {container_name}")
+                    total_removed += removed_from_container
+                    
+                except Exception as container_error:
+                    # Container might not exist or error accessing it
+                    print(f"[WARNING] Could not clean embeddings from {container_name}: {container_error}")
+                    continue
+                    
+        except Exception as e:
+            print(f"[WARNING] Error cleaning raw embeddings from vector stores: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        return total_removed
     
     def _get_graphrag_storage_for_update(self, case_id: str, firm_id: str, container_name: str) -> CosmosDBPipelineStorage:
         """

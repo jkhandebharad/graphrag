@@ -98,7 +98,9 @@ class CosmosDBPipelineStorage(PipelineStorage):
             self._container_name,
         )
         self._create_database()
-        self._create_container()
+        # Container is created lazily on first access (when data is written/read)
+        # This prevents creating empty containers for unused storage paths
+        self._container_client = None
 
     def _create_database(self) -> None:
         """Create the database if it doesn't exist."""
@@ -115,7 +117,14 @@ class CosmosDBPipelineStorage(PipelineStorage):
         self._container_client = None
 
     def _create_container(self) -> None:
-        """Create a container for the current container name if it doesn't exist."""
+        """Create a container for the current container name if it doesn't exist.
+        
+        This is called lazily - containers are only created when first accessed
+        (on first read/write operation), not during initialization.
+        """
+        if self._container_client is not None:
+            return  # Container already exists
+        
         partition_key = PartitionKey(path="/id", kind="Hash")
         if self._database_client:
             self._container_client = (
@@ -124,6 +133,15 @@ class CosmosDBPipelineStorage(PipelineStorage):
                     partition_key=partition_key,
                 )
             )
+            logger.debug("Created container: %s", self._container_name)
+
+    def _ensure_container(self) -> None:
+        """Ensure the container exists before performing operations.
+        
+        This is a convenience method that checks if container exists and creates it if needed.
+        """
+        if self._container_client is None:
+            self._create_container()
 
     def _delete_container(self) -> None:
         """Delete the container with the current container name if it exists."""
@@ -157,7 +175,10 @@ class CosmosDBPipelineStorage(PipelineStorage):
             self._container_name,
             file_pattern.pattern,
         )
-        if not self._database_client or not self._container_client:
+        if not self._database_client:
+            return
+        self._ensure_container()
+        if not self._container_client:
             return
 
         def item_filter(item: dict[str, Any]) -> bool:
@@ -233,7 +254,10 @@ class CosmosDBPipelineStorage(PipelineStorage):
     ) -> Any:
         """Fetch individual documents."""
         try:
-            if not self._database_client or not self._container_client:
+            if not self._database_client:
+                return None
+            self._ensure_container()
+            if not self._container_client:
                 return None
             if as_bytes:
                 prefix = self._get_prefix(key)
@@ -287,8 +311,12 @@ class CosmosDBPipelineStorage(PipelineStorage):
         """
 
         try:
-            if not self._database_client or not self._container_client:
-                raise ValueError("Database or container not initialized")
+            if not self._database_client:
+                raise ValueError("Database not initialized")
+            # Create container lazily on first write operation
+            self._ensure_container()
+            if not self._container_client:
+                raise ValueError("Container could not be created")
 
             # --- Case 1: Parquet-based datasets (GraphRAG core tables) ---
             if isinstance(value, bytes):
@@ -335,7 +363,10 @@ class CosmosDBPipelineStorage(PipelineStorage):
 
     async def has(self, key: str) -> bool:
         """Check if the contents of the given filename key exist in the cosmosdb storage."""
-        if not self._database_client or not self._container_client:
+        if not self._database_client:
+            return False
+        self._ensure_container()
+        if not self._container_client:
             return False
         if ".parquet" in key:
             prefix = self._get_prefix(key)
@@ -352,7 +383,10 @@ class CosmosDBPipelineStorage(PipelineStorage):
 
     async def delete(self, key: str) -> None:
         """Delete all cosmosdb items belonging to the given filename key."""
-        if not self._database_client or not self._container_client:
+        if not self._database_client:
+            return
+        self._ensure_container()
+        if not self._container_client:
             return
         try:
             if ".parquet" in key:
@@ -386,8 +420,31 @@ class CosmosDBPipelineStorage(PipelineStorage):
         raise NotImplementedError(msg)
 
     def child(self, name: str | None) -> PipelineStorage:
-        """Create a child storage instance."""
-        return self
+        """Create a child storage instance.
+        
+        For CosmosDB, creates a new storage instance with a modified container name
+        that includes the child path. This ensures that delta and previous data are
+        stored in separate containers during incremental indexing.
+        
+        Examples:
+            - update_output_5678 -> child('20231103-120000') -> update_output_5678_20231103-120000
+            - update_output_5678_20231103-120000 -> child('delta') -> update_output_5678_20231103-120000_delta
+            - update_output_5678_20231103-120000 -> child('previous') -> update_output_5678_20231103-120000_previous
+        """
+        if name is None:
+            return self
+        
+        # Append child name to container name to create logical separation
+        # This matches the filesystem behavior where child() creates subdirectories
+        child_container_name = f"{self._container_name}_{name}"
+        
+        return CosmosDBPipelineStorage(
+            database_name=self._database_name,
+            container_name=child_container_name,
+            cosmosdb_account_url=self._cosmosdb_account_url,
+            connection_string=self._connection_string,
+            encoding=self._encoding,
+        )
 
     def _get_prefix(self, key: str) -> str:
         """Get the prefix of the filename key."""
@@ -396,7 +453,10 @@ class CosmosDBPipelineStorage(PipelineStorage):
     async def get_creation_date(self, key: str) -> str:
         """Get a value from the cache."""
         try:
-            if not self._database_client or not self._container_client:
+            if not self._database_client:
+                return ""
+            self._ensure_container()
+            if not self._container_client:
                 return ""
             item = self._container_client.read_item(item=key, partition_key=key)
             return get_timestamp_formatted_with_local_tz(

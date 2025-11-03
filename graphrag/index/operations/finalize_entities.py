@@ -42,7 +42,20 @@ def finalize_entities(
     )
     final_entities = final_entities.loc[entities["title"].notna()].reset_index()
     # disconnected nodes and those with no community even at level 0 can be missing degree
-    final_entities["degree"] = final_entities["degree"].fillna(0).astype(int)
+    # Also handle case where graph is empty and degree column wasn't created by merge
+    if "degree" not in final_entities.columns:
+        final_entities["degree"] = 0
+    else:
+        final_entities["degree"] = final_entities["degree"].fillna(0).astype(int)
+    # Handle missing layout columns (x, y) when graph is empty or merge fails
+    if "x" not in final_entities.columns:
+        final_entities["x"] = 0.0
+    else:
+        final_entities["x"] = final_entities["x"].fillna(0.0).astype(float)
+    if "y" not in final_entities.columns:
+        final_entities["y"] = 0.0
+    else:
+        final_entities["y"] = final_entities["y"].fillna(0.0).astype(float)
     final_entities.reset_index(inplace=True)
     final_entities["human_readable_id"] = final_entities.index
     final_entities["id"] = final_entities["human_readable_id"].apply(

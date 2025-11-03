@@ -49,9 +49,19 @@ def layout_graph(
     )
 
     layout_df = pd.DataFrame(layout)
+    # If layout is empty, return empty DataFrame with correct columns
+    if layout_df.empty:
+        return pd.DataFrame(columns=["label", "x", "y", "size"])
+    
+    # Ensure all required columns exist (handle edge cases where some columns might be missing)
+    required_columns = ["label", "x", "y", "size"]
+    for col in required_columns:
+        if col not in layout_df.columns:
+            layout_df[col] = 0.0 if col in ["x", "y"] else (0 if col == "size" else "")
+    
     return layout_df.loc[
         :,
-        ["label", "x", "y", "size"],
+        required_columns,
     ]
 
 

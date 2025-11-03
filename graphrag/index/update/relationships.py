@@ -29,16 +29,29 @@ def _update_and_merge_relationships(
         The updated relationships.
     """
     # Increment the human readable id in b by the max of a
-    # Ensure both columns are integers
-    delta_relationships["human_readable_id"] = delta_relationships[
-        "human_readable_id"
-    ].astype(int)
-    old_relationships["human_readable_id"] = old_relationships[
-        "human_readable_id"
-    ].astype(int)
+    # Delta relationships come with human_readable_id starting from 0 (from finalize_relationships)
+    # We need to reassign them to avoid conflicts with old_relationships
+    
+    # First, ensure old_relationships has valid human_readable_id (handle NaN/missing)
+    if "human_readable_id" not in old_relationships.columns:
+        old_relationships["human_readable_id"] = old_relationships.index.astype(int)
+    else:
+        # Fill NaN with index-based values, then convert to int
+        # Use mask to fill NaN values with corresponding index values
+        mask = old_relationships["human_readable_id"].isna()
+        if mask.any():
+            old_relationships.loc[mask, "human_readable_id"] = old_relationships.index[mask]
+        old_relationships["human_readable_id"] = old_relationships["human_readable_id"].astype(int)
 
-    # Adjust delta_relationships IDs to be greater than any in old_relationships
-    initial_id = old_relationships["human_readable_id"].max() + 1
+    # Calculate the starting ID for delta relationships (must be > max of old)
+    if len(old_relationships) == 0:
+        initial_id = 0
+    else:
+        max_old_id = old_relationships["human_readable_id"].max()
+        initial_id = int(max_old_id) + 1 if pd.notna(max_old_id) else 0
+
+    # ALWAYS reassign delta_relationships human_readable_id starting from initial_id
+    # This ensures no conflicts with existing IDs in old_relationships
     delta_relationships["human_readable_id"] = np.arange(
         initial_id, initial_id + len(delta_relationships)
     )

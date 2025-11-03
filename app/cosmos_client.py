@@ -28,7 +28,6 @@ class CosmosDBManager:
         # Container references
         self.input_container = None
         self.output_container = None
-        self.cache_container = None
         self.logs_container = None
         self.config_container = None  # For settings.yaml and prompts
         
@@ -81,15 +80,6 @@ class CosmosDBManager:
         )
         print(f"[SUCCESS] Output container '{output_container_name}' ready")
         
-        # Cache container - stores LLM cache for this case
-        cache_container_name = f"cache_{case_id}"
-        print(f"[INFO] Creating '{cache_container_name}' container...")
-        self.cache_container = self.database.create_container_if_not_exists(
-            id=cache_container_name,
-            partition_key=PartitionKey(path="/id")
-        )
-        print(f"[SUCCESS] Cache container '{cache_container_name}' ready")
-        
         # Logs container - stores processing logs for this case
         logs_container_name = f"logs_{case_id}"
         print(f"[INFO] Creating '{logs_container_name}' container...")
@@ -141,7 +131,6 @@ class CosmosDBManager:
         required_containers = [
             f"input_{case_id}",
             f"output_{case_id}",
-            f"cache_{case_id}",
             f"logs_{case_id}"
         ]
         
@@ -206,30 +195,6 @@ class CosmosDBManager:
             print(f"[WARNING] Error checking for indexed data in output container: {e}")
             # If we can't check, assume it's a first run to be safe
             return False
-    
-    def create_update_output_container(self, case_id: str):
-        """
-        Create the update_output container for incremental indexing.
-        This container stores delta and previous data during incremental updates.
-        
-        Args:
-            case_id: Case identifier for container naming
-        """
-        if not self.database:
-            raise ValueError("Database not initialized")
-        
-        update_container_name = f"update_output_{case_id}"
-        print(f"[INFO] Creating update output container '{update_container_name}'...")
-        
-        try:
-            self.database.create_container_if_not_exists(
-                id=update_container_name,
-                partition_key=PartitionKey(path="/id")
-            )
-            print(f"[SUCCESS] Update output container '{update_container_name}' ready")
-        except Exception as e:
-            print(f"[ERROR] Failed to create update output container: {e}")
-            raise
 
 
 # Global instance
