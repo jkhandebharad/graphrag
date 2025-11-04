@@ -442,13 +442,14 @@ class OutputManager:
     
     def cleanup_raw_data_after_incremental_update(self, case_id: str, firm_id: str) -> Dict[str, Any]:
         """
-        Clean up raw (numeric ID) entities, relationships, and embeddings after incremental indexing.
-        GraphRAG's update workflows automatically copy final data from delta to output storage,
-        so we only need to clean up raw data artifacts.
+        Clean up raw (numeric ID) embeddings from vector stores after incremental indexing.
         
-        Process:
-        1. Clean raw entities and relationships from delta container
-        2. Clean raw embeddings from vector store containers
+        Note: Raw entities and relationships are already cleaned from delta storage 
+        by GraphRAG's generate_text_embeddings workflow before update workflows run.
+        GraphRAG's update workflows automatically copy final data from delta to output storage.
+        
+        This method only cleans raw embeddings from vector store containers that may
+        have been created with numeric entity/relationship IDs.
         
         Args:
             case_id: Case identifier
@@ -458,43 +459,6 @@ class OutputManager:
             Dict with cleanup operation results
         """
         try:
-            # Find the latest delta container: update_output_{case_id}_{timestamp}_delta
-            # Since containers are created with timestamp, we need to find the latest one
-            database = self.manager.database
-            
-            # List all containers and find ones matching update_output_{case_id}_*_delta pattern
-            pattern = re.compile(rf"^update_output_{case_id}_(\d{{8}}-\d{{6}})_delta$")
-            
-            containers = list(database.list_containers())
-            matching_containers = []
-            
-            for container in containers:
-                container_id = container['id']
-                match = pattern.match(container_id)
-                if match:
-                    timestamp = match.group(1)
-                    matching_containers.append((timestamp, container_id))
-            
-            if not matching_containers:
-                return {
-                    "status": "warning",
-                    "case_id": case_id,
-                    "raw_entities_removed": 0,
-                    "raw_relationships_removed": 0,
-                    "raw_embeddings_removed": 0,
-                    "message": "No delta container found - raw data cleanup skipped"
-                }
-            
-            # Get the latest container (sort by timestamp descending)
-            matching_containers.sort(reverse=True, key=lambda x: x[0])
-            delta_container_name = matching_containers[0][1]
-            
-            delta_container = database.get_container_client(delta_container_name)
-            
-            # Clean raw entities and relationships from delta container
-            raw_entities_removed = self._clean_raw_data_from_container(delta_container, "entities:")
-            raw_relationships_removed = self._clean_raw_data_from_container(delta_container, "relationships:")
-            
             # Clean raw embeddings from vector store containers
             # Vector store containers store embeddings with entity/relationship IDs
             # Need to remove embeddings that correspond to raw (numeric) entity IDs
@@ -503,10 +467,10 @@ class OutputManager:
             return {
                 "status": "success",
                 "case_id": case_id,
-                "raw_entities_removed": raw_entities_removed,
-                "raw_relationships_removed": raw_relationships_removed,
+                "raw_entities_removed": 0,  # Already cleaned by generate_text_embeddings workflow
+                "raw_relationships_removed": 0,  # Already cleaned by generate_text_embeddings workflow
                 "raw_embeddings_removed": raw_embeddings_removed,
-                "message": f"Raw data cleaned from {delta_container_name} and vector stores. GraphRAG has already copied final data to output container."
+                "message": f"Raw embeddings cleaned from vector stores. Raw entities/relationships were already cleaned before update workflows. GraphRAG has already copied final data to output container."
             }
             
         except Exception as e:

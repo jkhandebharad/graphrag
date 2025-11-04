@@ -488,13 +488,14 @@ async def index_documents_for_case(case_id: str, firm_id: str):
         print(f"[INFO] All data stored directly in CosmosDB by GraphRAG")
         firm_logs_manager.info(case_id, f"GraphRAG {indexing_type} completed", "indexing")
         
-        # For incremental indexing: merge entities and relationships from update_output to output
+        # For incremental indexing: cleanup raw embeddings
         if is_update_run:
-            print(f"[INFO] Cleaning up raw data artifacts from incremental indexing...")
-            firm_logs_manager.info(case_id, "Cleaning up raw data after incremental indexing", "indexing")
+            print(f"[INFO] Cleaning up raw embeddings from vector stores after incremental indexing...")
+            firm_logs_manager.info(case_id, "Cleaning up raw embeddings after incremental indexing", "indexing")
             
             # GraphRAG update workflows automatically copy final data to output container
-            # We only need to clean up raw (numeric ID) entities, relationships, and embeddings
+            # Raw entities/relationships are already cleaned by generate_text_embeddings workflow
+            # We only need to clean up raw embeddings from vector stores
             cleanup_result = firm_output_manager.cleanup_raw_data_after_incremental_update(case_id, firm_id)
             
             print(f"[SUCCESS] Cleanup completed: {cleanup_result}")

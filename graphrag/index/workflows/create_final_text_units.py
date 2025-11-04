@@ -87,6 +87,18 @@ def _entities(df: pd.DataFrame) -> pd.DataFrame:
     selected = df.loc[:, ["id", "text_unit_ids"]]
     unrolled = selected.explode(["text_unit_ids"]).reset_index(drop=True)
 
+    # Filter to only include UUID entity IDs (final entities)
+    # Numeric IDs are raw entities that should be excluded
+    def _is_uuid(id_str: str) -> bool:
+        """Check if an ID is a UUID (final entity) vs numeric (raw)."""
+        if pd.isna(id_str) or not isinstance(id_str, str):
+            return False
+        # UUIDs contain hyphens and are longer (typically 36 chars with hyphens)
+        return "-" in id_str and len(id_str) > 20
+    
+    # Only keep rows where entity id is a UUID
+    unrolled = unrolled[unrolled["id"].apply(_is_uuid)]
+
     return (
         unrolled.groupby("text_unit_ids", sort=False)
         .agg(entity_ids=("id", "unique"))
@@ -98,6 +110,17 @@ def _entities(df: pd.DataFrame) -> pd.DataFrame:
 def _relationships(df: pd.DataFrame) -> pd.DataFrame:
     selected = df.loc[:, ["id", "text_unit_ids"]]
     unrolled = selected.explode(["text_unit_ids"]).reset_index(drop=True)
+
+    # Filter to only include UUID relationship IDs (final relationships)
+    def _is_uuid(id_str: str) -> bool:
+        """Check if an ID is a UUID (final relationship) vs numeric (raw)."""
+        if pd.isna(id_str) or not isinstance(id_str, str):
+            return False
+        # UUIDs contain hyphens and are longer
+        return "-" in id_str and len(id_str) > 20
+    
+    # Only keep rows where relationship id is a UUID
+    unrolled = unrolled[unrolled["id"].apply(_is_uuid)]
 
     return (
         unrolled.groupby("text_unit_ids", sort=False)

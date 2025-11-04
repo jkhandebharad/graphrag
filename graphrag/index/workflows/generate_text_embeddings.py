@@ -89,6 +89,19 @@ async def run_workflow(
                 context.output_storage,
             )
 
+    # Clean raw entities/relationships from delta_storage if this is an incremental run
+    # This ensures update workflows only see final entities (UUIDs)
+    if "update_timestamp" in context.state:
+        logger.info("[CLEANUP] Incremental run detected - cleaning raw entities/relationships from delta storage")
+        from graphrag.index.run.utils import get_update_storages
+        from graphrag.storage.cosmosdb_pipeline_storage import CosmosDBPipelineStorage
+        
+        _, _, delta_storage = get_update_storages(config, context.state["update_timestamp"])
+        
+        # Only clean if using CosmosDB storage
+        if isinstance(delta_storage, CosmosDBPipelineStorage):
+            await _clean_raw_entities_from_storage(delta_storage, logger)
+
     logger.info("Workflow completed: generate_text_embeddings")
     return WorkflowFunctionOutput(result=output)
 
@@ -190,3 +203,69 @@ async def _run_embeddings(
     )
 
     return data.loc[:, ["id", "embedding"]]
+
+
+async def _clean_raw_entities_from_storage(storage, logger: logging.Logger) -> None:
+    """Clean raw entities and relationships (numeric IDs) from CosmosDB storage.
+    
+    This function removes raw entities (entities:0, entities:1, etc.) and 
+    raw relationships (relationships:0, relationships:1, etc.) from the delta
+    storage container. Only final entities with UUID IDs should remain, ensuring
+    that update workflows only process final entities during incremental indexing.
+    
+    Args:
+        storage: CosmosDBPipelineStorage instance to clean
+        logger: Logger instance for logging cleanup operations
+    """
+    try:
+        # Get container client from storage
+        container = storage._container_client
+        if not container:
+            storage._ensure_container()
+            container = storage._container_client
+        
+        if not container:
+            logger.warning("[CLEANUP] Could not access container for cleanup")
+            return
+        
+        # Clean raw entities (entities:0, entities:1, etc.)
+        raw_entities_removed = 0
+        query = "SELECT * FROM c WHERE STARTSWITH(c.id, 'entities:')"
+        items = list(container.query_items(query=query, enable_cross_partition_query=True))
+        
+        for item in items:
+            item_id = item.get("id", "")
+            if ":" in item_id:
+                id_suffix = item_id.split(":", 1)[1]
+                # If ID suffix is numeric (raw), delete it
+                # UUIDs contain hyphens and are longer, numeric IDs are short numbers
+                if id_suffix.isdigit():
+                    try:
+                        container.delete_item(item=item_id, partition_key=item_id)
+                        raw_entities_removed += 1
+                    except Exception as e:
+                        logger.warning(f"[CLEANUP] Failed to delete raw entity {item_id}: {e}")
+        
+        # Clean raw relationships (relationships:0, relationships:1, etc.)
+        raw_relationships_removed = 0
+        query = "SELECT * FROM c WHERE STARTSWITH(c.id, 'relationships:')"
+        items = list(container.query_items(query=query, enable_cross_partition_query=True))
+        
+        for item in items:
+            item_id = item.get("id", "")
+            if ":" in item_id:
+                id_suffix = item_id.split(":", 1)[1]
+                # If ID suffix is numeric (raw), delete it
+                if id_suffix.isdigit():
+                    try:
+                        container.delete_item(item=item_id, partition_key=item_id)
+                        raw_relationships_removed += 1
+                    except Exception as e:
+                        logger.warning(f"[CLEANUP] Failed to delete raw relationship {item_id}: {e}")
+        
+        logger.info(f"[CLEANUP] Cleaned {raw_entities_removed} raw entities and {raw_relationships_removed} raw relationships from delta storage")
+    
+    except Exception as e:
+        logger.warning(f"[CLEANUP] Error cleaning raw entities from storage: {e}")
+        import traceback
+        logger.debug(f"[CLEANUP] Traceback: {traceback.format_exc()}")
