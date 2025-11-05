@@ -21,7 +21,26 @@ def finalize_entities(
     embed_config: EmbedGraphConfig | None = None,
     layout_enabled: bool = False,
 ) -> pd.DataFrame:
-    """All the steps to transform final entities."""
+    """All the steps to transform final entities.
+     Input examples:
+    
+    entities DataFrame:
+    ┌─────────────────────┬──────────┬──────────────────────────────┬──────────────┬──────────┐
+    │ title               │ type     │ description                  │ text_unit_ids│ frequency│
+    ├─────────────────────┼──────────┼──────────────────────────────┼──────────────┼──────────┤
+    │ Michael Anderson    │ person   │ Plaintiff in accident case   │ [tu-1, tu-2] │ 2        │
+    │ John Davis          │ person   │ Driver of Ford Explorer      │ [tu-1]       │ 1        │
+    │ Brooklyn, New York  │ geo      │ Location of the accident     │ [tu-1]       │ 1        │
+    └─────────────────────┴──────────┴──────────────────────────────┴──────────────┴──────────┘
+    
+    relationships DataFrame:
+    ┌─────────────────────┬─────────────────────┬──────────────┬────────┬──────────────┐
+    │ source              │ target               │ description  │ weight │ text_unit_ids│
+    ├─────────────────────┼─────────────────────┼──────────────┼────────┼──────────────┤
+    │ Michael Anderson    │ John Davis           │ was struck by│ 1.0    │ [tu-1]       │
+    │ John Davis          │ Michael Anderson     │ struck       │ 1.0    │ [tu-1]       │
+    └─────────────────────┴─────────────────────┴──────────────┴────────┴──────────────┘
+    """
     graph = create_graph(relationships, edge_attr=["weight"])
     graph_embeddings = None
     if embed_config is not None and embed_config.enabled:
@@ -61,6 +80,17 @@ def finalize_entities(
     final_entities["id"] = final_entities["human_readable_id"].apply(
         lambda _x: str(uuid4())
     )
+
+    '''
+    Returns
+    ┌──────────────────────────────────────┬───────────────────┬─────────────────────┬──────────┬──────────────────────────────┬──────────────┬──────────┬────────┬──────┬──────┐
+    │ id                                   │ human_readable_id │ title               │ type     │ description                  │ text_unit_ids│ frequency│ degree │ x    │ y    │
+    ├──────────────────────────────────────┼───────────────────┼─────────────────────┼──────────┼──────────────────────────────┼──────────────┼──────────┼────────┼──────┼──────┤
+    │ 51d4a181-c2e7-46f9-9896-81c784dbacec │ 0                  │ Michael Anderson    │ person   │ Plaintiff in accident case   │ [tu-1, tu-2] │ 2        │ 1      │ 0.0  │ 0.0  │
+    │ fc83687e-3476-4db6-982e-79f0dd4c8ccd │ 1                  │ John Davis          │ person   │ Driver of Ford Explorer      │ [tu-1]       │ 1        │ 2      │ 0.0  │ 0.0  │
+    │ 47453779-0abe-41ae-813c-e2f245a79a1e │ 2                  │ Brooklyn, New York  │ geo      │ Location of the accident     │ [tu-1]       │ 1        │ 1      │ 0.0  │ 0.0  │
+    └──────────────────────────────────────┴───────────────────┴─────────────────────┴──────────┴──────────────────────────────┴──────────────┴──────────┴────────┴──────┴──────┘
+    '''
     return final_entities.loc[
         :,
         ENTITIES_FINAL_COLUMNS,

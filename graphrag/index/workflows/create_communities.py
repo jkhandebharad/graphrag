@@ -58,7 +58,30 @@ def create_communities(
     use_lcc: bool,
     seed: int | None = None,
 ) -> pd.DataFrame:
-    """All the steps to transform final communities."""
+    """All the steps to transform final communities.
+    input for this workflow is final entity and relationship table that is output of finalize_graph workflow.
+    input examples:
+     entities DataFrame (final entities from finalize_graph):
+    ┌──────────────────────────────────────┬───────────────────┬─────────────────────┬──────────┬──────────────────────────────┬──────────────┬──────────┬────────┬──────┬──────┐
+    │ id                                   │ human_readable_id │ title               │ type     │ description                  │ text_unit_ids│ frequency│ degree │ x    │ y    │
+    ├──────────────────────────────────────┼───────────────────┼─────────────────────┼──────────┼──────────────────────────────┼──────────────┼──────────┼────────┼──────┼──────┤
+    │ 51d4a181-c2e7-46f9-9896-81c784dbacec │ 0                 │ Michael Anderson    │ person   │ Plaintiff in accident case   │ [tu-1, tu-2] │ 2        │ 1      │ 0.0  │ 0.0  │
+    │ fc83687e-3476-4db6-982e-79f0dd4c8ccd │ 1                 │ John Davis          │ person   │ Driver of Ford Explorer      │ [tu-1]       │ 1        │ 2      │ 0.0  │ 0.0  │
+    │ 47453779-0abe-41ae-813c-e2f245a79a1e │ 2                 │ Brooklyn, New York  │ geo      │ Location of the accident     │ [tu-1]       │ 1        │ 1      │ 0.0  │ 0.0  │
+    └──────────────────────────────────────┴───────────────────┴─────────────────────┴──────────┴──────────────────────────────┴──────────────┴──────────┴────────┴──────┴──────┘
+    
+    relationships DataFrame (final relationships from finalize_graph):
+    ┌──────────────────────────────────────┬───────────────────┬─────────────────────┬─────────────────────┬──────────────┬────────┬────────────────┬──────────────┐
+    │ id                                   │ human_readable_id │ source              │ target               │ description   │ weight │ combined_degree│ text_unit_ids│
+    ├──────────────────────────────────────┼───────────────────┼─────────────────────┼─────────────────────┼──────────────┼────────┼────────────────┼──────────────┤
+    │ a516f710-36df-4289-bcbd-c44150d598b4 │ 0                 │ Michael Anderson    │ John Davis           │ was struck by │ 1.0    │ 3               │ [tu-1]       │
+    │ 2f759969-5dd3-4a89-b99b-5e97c1c74ae6 │ 1                 │ John Davis          │ Michael Anderson     │ struck        │ 1.0    │ 3               │ [tu-1]       │
+    └──────────────────────────────────────┴───────────────────┴─────────────────────┴─────────────────────┴──────────────┴────────┴────────────────┴──────────────┘
+    
+
+    
+
+    """
     graph = create_graph(relationships, edge_attr=["weight"])
 
     clusters = cluster_graph(
