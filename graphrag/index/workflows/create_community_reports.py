@@ -92,7 +92,41 @@ async def create_community_reports(
     async_mode: AsyncType = AsyncType.AsyncIO,
     num_threads: int = 4,
 ) -> pd.DataFrame:
-    """All the steps to transform community reports."""
+    """All the steps to transform community reports.
+    
+    input examples:
+    edges_input DataFrame:
+    | id      | source      | target      | description      | degree |
+    |---------|-------------|-------------|------------------|--------|
+    | e-001  | "n-001"     | "n-002"     | "is a friend of" | 1      |
+    | e-002  | "n-002"     | "n-003"     | "is a friend of" | 1      |
+    | e-003  | "n-003"     | "n-004"     | "is a friend of" | 1      |
+  
+    entities DataFrame:
+    | id      | title       | description      | degree |
+    |---------|-------------|------------------|--------|
+    | n-001  | "Michael Anderson" | "is a software engineer" | 1      |
+    | n-002  | "John Davis" | "works at Microsoft" | 1      |
+    | n-003  | "Brooklyn, New York" | "is a borough" | 1      |
+    | n-004  | "New York" | "is a city" | 1      |
+    
+    communities DataFrame:
+    | id      | entity_ids |
+    |---------|------------|
+    | c-001  | ["n-001", "n-002"] |
+    | c-002  | ["n-002", "n-003"] |
+    | c-003  | ["n-003", "n-004"] |
+    
+    claims_input DataFrame:
+    | id      | subject     | type      | status      | description |
+    |---------|-------------|-----------|-------------|-------------|
+    | c-001  | "Michael Anderson" | "is a software engineer" | "active" | "Michael Anderson is a software engineer." |
+    | c-002  | "John Davis" | "works at Microsoft" | "active" | "John Davis works at Microsoft." |
+    | c-003  | "Brooklyn, New York" | "is a borough" | "active" | "Brooklyn, New York is a borough." |
+    | c-004  | "New York" | "is a city" | "active" | "New York is a city." |
+
+   
+    """
     nodes = explode_communities(communities, entities)
 
     nodes = _prep_nodes(nodes)

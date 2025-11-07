@@ -58,7 +58,36 @@ def create_final_text_units(
     final_relationships: pd.DataFrame,
     final_covariates: pd.DataFrame | None,
 ) -> pd.DataFrame:
-    """All the steps to transform the text units."""
+    """All the steps to transform the text units.
+    input examples:
+    text_units DataFrame:
+    | id      | text                                          | document_ids      | n_tokens |
+    |---------|-----------------------------------------------|-------------------|----------|
+    | tu-001  | "Michael Anderson is a software engineer."   | ["doc-1"]         | 8        |
+    | tu-002  | "John Davis works at Microsoft."            | ["doc-1", "doc-2"] | 7        |
+    | tu-003  | "Brooklyn, New York is a borough."          | ["doc-2"]         | 6        |
+    
+    final_entities DataFrame:
+    | id      | text_unit_ids |
+    |---------|---------------|
+    | e-001  | ["tu-001"]    |
+    | e-002  | ["tu-002"]    |
+    | e-003  | ["tu-003"]    |
+    
+    final_relationships DataFrame:
+    | id      | text_unit_ids |
+    |---------|---------------|
+    | r-001  | ["tu-001"]    |
+    | r-002  | ["tu-002"]    |
+    | r-003  | ["tu-003"]    |
+    
+    final_covariates DataFrame:
+    | id      | text_unit_id |
+    |---------|--------------|
+    | c-001  | "tu-001"     |
+    | c-002  | "tu-002"     |
+    | c-003  | "tu-003"     |
+    """
     selected = text_units.loc[:, ["id", "text", "document_ids", "n_tokens"]]
     selected["human_readable_id"] = selected.index
 
@@ -76,7 +105,14 @@ def create_final_text_units(
         final_joined["covariate_ids"] = [[] for i in range(len(final_joined))]
 
     aggregated = final_joined.groupby("id", sort=False).agg("first").reset_index()
-
+    '''
+    Returns
+    | id      | text                                          | document_ids      | n_tokens | entity_ids      | relationship_ids      | covariate_ids     |
+    |---------|-----------------------------------------------|-------------------|----------|-----------------|-----------------------|-------------------|
+    | tu-001  | "Michael Anderson is a software engineer."   | ["doc-1"]         | 8        | ["e-001"]        | ["r-001"]            | ["c-001"]         |
+    | tu-002  | "John Davis works at Microsoft."            | ["doc-1", "doc-2"] | 7        | ["e-002"]        | ["r-002"]            | ["c-002"]         |
+    | tu-003  | "Brooklyn, New York is a borough."          | ["doc-2"]         | 6        | ["e-003"]        | ["r-003"]            | ["c-003"]         |
+    '''
     return aggregated.loc[
         :,
         TEXT_UNITS_FINAL_COLUMNS,

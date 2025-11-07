@@ -266,22 +266,44 @@ async def save_document(file: UploadFile, case_id: str, firm_id: str) -> Documen
         txt_filename = f"{firm_id}_{case_id}_{new_doc_id}.txt"
         stored_filename = txt_filename  # Update to use txt filename
         
-        # getting uploaded the original text to cosmosDB
-        firm_input_manager.store_extracted_text(
-            case_id=case_id,
-            document_id=new_doc_id,
-            text_content=extracted_text,
-            filename=txt_filename,
-            original_filename=file.filename,  # Track original filename
-            firm_id=firm_id  # Pass firm_id for proper database routing
-        )
-        
-        print(f"   [SUCCESS] Text extracted and saved to CosmosDB: {txt_filename} ({len(extracted_text)} characters)")
-        print(f"   [INFO] Original PDF/DOCX binary NOT stored (only text is kept)")
+        # Store extracted text (may be chunked if > 2MB)
         try:
-            firm_logs_manager.info(case_id, f"Text saved: {txt_filename} from {file.filename} ({len(extracted_text)} chars)", "upload")
-        except Exception as log_err:
-            print(f"[WARNING] Could not log to CosmosDB: {log_err}")
+            stored_doc = firm_input_manager.store_extracted_text(
+                case_id=case_id,
+                document_id=new_doc_id,
+                text_content=extracted_text,
+                filename=txt_filename,
+                original_filename=file.filename,  # Track original filename
+                firm_id=firm_id  # Pass firm_id for proper database routing
+            )
+            
+            if stored_doc:
+                # Check if document was chunked (has part_number field)
+                if "part_number" in stored_doc and "total_parts" in stored_doc:
+                    total_parts = stored_doc.get("total_parts", 1)
+                    stored_filename = txt_filename  # Use base filename for display
+                    print(f"   [SUCCESS] Text extracted and saved to CosmosDB in {total_parts} parts: {stored_filename} ({len(extracted_text)} characters)")
+                    try:
+                        firm_logs_manager.info(case_id, f"Text saved in {total_parts} parts: {stored_filename} from {file.filename} ({len(extracted_text)} chars)", "upload")
+                    except Exception as log_err:
+                        print(f"[WARNING] Could not log to CosmosDB: {log_err}")
+                else:
+                    stored_filename = stored_doc.get("filename", txt_filename)
+                    print(f"   [SUCCESS] Text extracted and saved to CosmosDB: {stored_filename} ({len(extracted_text)} characters)")
+                    try:
+                        firm_logs_manager.info(case_id, f"Text saved: {stored_filename} from {file.filename} ({len(extracted_text)} chars)", "upload")
+                    except Exception as log_err:
+                        print(f"[WARNING] Could not log to CosmosDB: {log_err}")
+            else:
+                stored_filename = txt_filename
+                print(f"   [WARNING] No document was stored")
+        except Exception as e:
+            print(f"   [ERROR] Failed to store extracted text: {e}")
+            firm_logs_manager.error(case_id, f"Failed to store text: {e}", "upload")
+            stored_filename = txt_filename  # Fallback
+            raise
+        
+        print(f"   [INFO] Original PDF/DOCX binary NOT stored (only text is kept)")
     else:
         print(f"   [WARNING] No text could be extracted from {new_filename}")
         firm_logs_manager.warning(case_id, f"No text extracted from {new_filename}", "upload")

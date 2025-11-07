@@ -76,12 +76,19 @@ def create_communities(
     ├──────────────────────────────────────┼───────────────────┼─────────────────────┼─────────────────────┼──────────────┼────────┼────────────────┼──────────────┤
     │ a516f710-36df-4289-bcbd-c44150d598b4 │ 0                 │ Michael Anderson    │ John Davis           │ was struck by │ 1.0    │ 3               │ [tu-1]       │
     │ 2f759969-5dd3-4a89-b99b-5e97c1c74ae6 │ 1                 │ John Davis          │ Michael Anderson     │ struck        │ 1.0    │ 3               │ [tu-1]       │
-    └──────────────────────────────────────┴───────────────────┴─────────────────────┴─────────────────────┴──────────────┴────────┴────────────────┴──────────────┘
+    └──────────────────────────────────────┴───────────────────┴─────────────────────┴──────────┴──────────────┴────────┴────────────────┴──────────────┘
     
 
     
 
     """
+    def _is_uuid(id_str: str) -> bool:
+        """Check if an ID is a UUID (final entity/relationship) vs numeric (raw)."""
+        if pd.isna(id_str) or not isinstance(id_str, str):
+            return False
+        # UUIDs contain hyphens and are longer (typically 36 chars with hyphens)
+        return "-" in id_str and len(id_str) > 20
+
     graph = create_graph(relationships, edge_attr=["weight"])
 
     clusters = cluster_graph(
@@ -100,6 +107,12 @@ def create_communities(
     entity_ids = communities.merge(entities, on="title", how="inner")
     entity_ids = (
         entity_ids.groupby("community").agg(entity_ids=("id", list)).reset_index()
+    )
+    
+    # Filter to only include UUID entity IDs (final entities)
+    # Numeric IDs are raw entities that should be excluded
+    entity_ids["entity_ids"] = entity_ids["entity_ids"].apply(
+        lambda x: [id_val for id_val in x if _is_uuid(str(id_val))]
     )
 
     # aggregate relationships ids for each community
@@ -142,6 +155,13 @@ def create_communities(
     all_grouped["relationship_ids"] = all_grouped["relationship_ids"].apply(
         lambda x: sorted(set(x))
     )
+    
+    # Filter to only include UUID relationship IDs (final relationships)
+    # Numeric IDs are raw relationships that should be excluded
+    all_grouped["relationship_ids"] = all_grouped["relationship_ids"].apply(
+        lambda x: [id_val for id_val in x if _is_uuid(str(id_val))]
+    )
+    
     all_grouped["text_unit_ids"] = all_grouped["text_unit_ids"].apply(
         lambda x: sorted(set(x))
     )
