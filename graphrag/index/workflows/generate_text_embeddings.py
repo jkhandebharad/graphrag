@@ -237,12 +237,31 @@ async def _clean_raw_entities_from_storage(storage, logger: logging.Logger) -> N
             item_id = item.get("id", "")
             if ":" in item_id:
                 id_suffix = item_id.split(":", 1)[1]
-                # If ID suffix is numeric (raw), delete it
+                
+                # Check if this is a _part2 item - extract base ID
+                is_part2 = id_suffix.endswith("_part2")
+                if is_part2:
+                    base_suffix = id_suffix.replace("_part2", "")
+                else:
+                    base_suffix = id_suffix
+                
+                # If base ID suffix is numeric (raw), delete it and its part2 if exists
                 # UUIDs contain hyphens and are longer, numeric IDs are short numbers
-                if id_suffix.isdigit():
+                if base_suffix.isdigit():
                     try:
+                        # Delete the main item (or part2 if this is part2)
                         container.delete_item(item=item_id, partition_key=item_id)
                         raw_entities_removed += 1
+                        
+                        # If this was NOT a part2 item, also try to delete part2
+                        if not is_part2:
+                            part2_id = f"{item_id}_part2"
+                            try:
+                                container.delete_item(item=part2_id, partition_key=part2_id)
+                                raw_entities_removed += 1
+                                logger.debug(f"[CLEANUP] Also deleted part2: {part2_id}")
+                            except Exception:
+                                pass  # Part2 doesn't exist, that's fine
                     except Exception as e:
                         logger.warning(f"[CLEANUP] Failed to delete raw entity {item_id}: {e}")
         
@@ -255,11 +274,30 @@ async def _clean_raw_entities_from_storage(storage, logger: logging.Logger) -> N
             item_id = item.get("id", "")
             if ":" in item_id:
                 id_suffix = item_id.split(":", 1)[1]
-                # If ID suffix is numeric (raw), delete it
-                if id_suffix.isdigit():
+                
+                # Check if this is a _part2 item - extract base ID
+                is_part2 = id_suffix.endswith("_part2")
+                if is_part2:
+                    base_suffix = id_suffix.replace("_part2", "")
+                else:
+                    base_suffix = id_suffix
+                
+                # If base ID suffix is numeric (raw), delete it and its part2 if exists
+                if base_suffix.isdigit():
                     try:
+                        # Delete the main item (or part2 if this is part2)
                         container.delete_item(item=item_id, partition_key=item_id)
                         raw_relationships_removed += 1
+                        
+                        # If this was NOT a part2 item, also try to delete part2
+                        if not is_part2:
+                            part2_id = f"{item_id}_part2"
+                            try:
+                                container.delete_item(item=part2_id, partition_key=part2_id)
+                                raw_relationships_removed += 1
+                                logger.debug(f"[CLEANUP] Also deleted part2: {part2_id}")
+                            except Exception:
+                                pass  # Part2 doesn't exist, that's fine
                     except Exception as e:
                         logger.warning(f"[CLEANUP] Failed to delete raw relationship {item_id}: {e}")
         

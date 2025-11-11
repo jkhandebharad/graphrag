@@ -4,6 +4,7 @@
 """A package containing the CosmosDB vector store implementation."""
 
 import json
+import math
 from typing import Any
 
 from azure.cosmos import ContainerProxy, CosmosClient, DatabaseProxy
@@ -163,20 +164,132 @@ class CosmosDBVectorStore(BaseVectorStore):
             msg = "Container client is not initialized."
             raise ValueError(msg)
 
+        # Cosmos DB 2MB limit per item (in bytes)
+        MAX_DOCUMENT_SIZE = 2 * 1024 * 1024  # 2MB
+
         # Upload documents to CosmosDB
         for doc in documents:
             if doc.vector is not None:
                 print("Document to store:")  # noqa: T201
                 print(doc)  # noqa: T201
-                doc_json = {
+                
+                # Create base document structure to calculate metadata size (without text)
+                base_doc_json = {
                     self.id_field: doc.id,
                     self.vector_field: doc.vector,
-                    self.text_field: doc.text,
+                    self.text_field: "",  # Empty text for size calculation
                     self.attributes_field: json.dumps(doc.attributes),
                 }
-                print("Storing document in CosmosDB:")  # noqa: T201
-                print(doc_json)  # noqa: T201
-                self._container_client.upsert_item(doc_json)
+                
+                # Calculate metadata size (vector + attributes + id, without text)
+                metadata_json = json.dumps(base_doc_json, ensure_ascii=False)
+                metadata_size = len(metadata_json.encode('utf-8'))
+                
+                # Calculate available space for text (with 1KB safety margin)
+                available_text_size = MAX_DOCUMENT_SIZE - metadata_size - 1024
+                
+                if available_text_size <= 0:
+                    raise ValueError(f"Document {doc.id} metadata alone exceeds 2MB limit (metadata size: {metadata_size} bytes)")
+                
+                # Get text size in bytes (UTF-8 encoding)
+                text = doc.text or ""
+                text_bytes = len(text.encode('utf-8')) if text else 0
+                
+                # Create full document to check total size
+                full_doc_json = {
+                    self.id_field: doc.id,
+                    self.vector_field: doc.vector,
+                    self.text_field: text,
+                    self.attributes_field: json.dumps(doc.attributes),
+                }
+                full_doc_size = len(json.dumps(full_doc_json, ensure_ascii=False).encode('utf-8'))
+                
+                # Check if document fits in one item
+                if full_doc_size <= MAX_DOCUMENT_SIZE:
+                    # Document fits - store as-is
+                    print("Storing document in CosmosDB:")  # noqa: T201
+                    print(full_doc_json)  # noqa: T201
+                    try:
+                        self._container_client.upsert_item(full_doc_json)
+                    except CosmosHttpResponseError as e:
+                        # If it fails due to size, chunk the document
+                        if e.status_code == 413 or e.status_code == 400:
+                            print(f"[WARNING] Document {doc.id} exceeded size limit during upsert, attempting chunking...")  # noqa: T201
+                            # Continue to chunking logic below
+                        else:
+                            raise
+                else:
+                    # Document exceeds 2MB - need to chunk
+                    print(f"[INFO] Document {doc.id} exceeds 2MB ({full_doc_size} bytes), splitting into chunks...")  # noqa: T201
+                
+                # Chunking logic (if document exceeds 2MB or upsert failed)
+                if full_doc_size > MAX_DOCUMENT_SIZE or (text_bytes > available_text_size):
+                    # Calculate number of chunks needed
+                    num_chunks = math.ceil(text_bytes / available_text_size) if text_bytes > 0 else 1
+                    
+                    print(f"[INFO] Splitting document {doc.id} into {num_chunks} parts...")  # noqa: T201
+                    
+                    # Prepare chunked attributes
+                    chunked_attributes = doc.attributes.copy() if doc.attributes else {}
+                    chunked_attributes["_original_id"] = str(doc.id)
+                    chunked_attributes["_total_parts"] = num_chunks
+                    
+                    # Split text into chunks
+                    text_bytes_list = text.encode('utf-8')
+                    
+                    for part_num in range(1, num_chunks + 1):
+                        # Calculate chunk boundaries (UTF-8 safe)
+                        start_byte = (part_num - 1) * available_text_size
+                        end_byte = min(part_num * available_text_size, text_bytes)
+                        
+                        # Extract chunk bytes
+                        chunk_bytes = text_bytes_list[start_byte:end_byte]
+                        
+                        # Decode chunk with UTF-8 error handling
+                        try:
+                            chunk_text = chunk_bytes.decode('utf-8')
+                        except UnicodeDecodeError:
+                            # Find the last complete character boundary
+                            while len(chunk_bytes) > 0:
+                                try:
+                                    chunk_text = chunk_bytes.decode('utf-8')
+                                    break
+                                except UnicodeDecodeError:
+                                    chunk_bytes = chunk_bytes[:-1]
+                            else:
+                                chunk_text = chunk_bytes.decode('utf-8', errors='replace')
+                        
+                        # Create part ID
+                        part_id = f"{doc.id}_part{part_num}"
+                        
+                        # Update attributes with part number
+                        part_attributes = chunked_attributes.copy()
+                        part_attributes["_part_number"] = part_num
+                        
+                        # Create document for this part (same vector, chunked text)
+                        part_doc_json = {
+                            self.id_field: part_id,
+                            self.vector_field: doc.vector,  # Same vector for all parts
+                            self.text_field: chunk_text,
+                            self.attributes_field: json.dumps(part_attributes),
+                        }
+                        
+                        # Verify part size
+                        part_json_str = json.dumps(part_doc_json, ensure_ascii=False)
+                        part_size = len(part_json_str.encode('utf-8'))
+                        
+                        if part_size > MAX_DOCUMENT_SIZE:
+                            raise ValueError(
+                                f"Document part {part_id} still exceeds 2MB ({part_size} bytes) after chunking. "
+                                f"Metadata may be too large (metadata size: {metadata_size} bytes)."
+                            )
+                        
+                        print(f"Storing document part {part_num}/{num_chunks} in CosmosDB: {part_id} ({len(chunk_text)} chars, {part_size} bytes total)")  # noqa: T201
+                        try:
+                            self._container_client.upsert_item(part_doc_json)
+                        except Exception as e:
+                            print(f"[ERROR] Failed to store part {part_num}: {e}")  # noqa: T201
+                            raise
 
     def similarity_search_by_vector(
         self, query_embedding: list[float], k: int = 10, **kwargs: Any
@@ -187,7 +300,8 @@ class CosmosDBVectorStore(BaseVectorStore):
             raise ValueError(msg)
 
         try:
-            query = f"SELECT TOP {k} c.{self.id_field}, c.{self.text_field}, c.{self.vector_field}, c.{self.attributes_field}, VectorDistance(c.{self.vector_field}, @embedding) AS SimilarityScore FROM c ORDER BY VectorDistance(c.{self.vector_field}, @embedding)"  # noqa: S608
+            # Fetch more items to account for chunked documents (k*3 to ensure we get enough unique documents)
+            query = f"SELECT TOP {k * 3} c.{self.id_field}, c.{self.text_field}, c.{self.vector_field}, c.{self.attributes_field}, VectorDistance(c.{self.vector_field}, @embedding) AS SimilarityScore FROM c ORDER BY VectorDistance(c.{self.vector_field}, @embedding)"  # noqa: S608
             query_params = [{"name": "@embedding", "value": query_embedding}]
             items = list(
                 self._container_client.query_items(
@@ -222,23 +336,104 @@ class CosmosDBVectorStore(BaseVectorStore):
                 similarity = cosine_similarity(query_embedding, item_vector)
                 item["SimilarityScore"] = similarity
 
-            # Sort by similarity score (higher is better) and take top k
+            # Sort by similarity score (higher is better) and take top k*3 to account for chunked docs
             items = sorted(
                 items, key=lambda x: x.get("SimilarityScore", 0.0), reverse=True
-            )[:k]
+            )[:k * 3]
 
-        return [
-            VectorStoreSearchResult(
-                document=VectorStoreDocument(
-                    id=item.get(self.id_field, ""),
-                    text=item.get(self.text_field, ""),
-                    vector=item.get(self.vector_field, []),
-                    attributes=(json.loads(item.get(self.attributes_field, "{}"))),
-                ),
-                score=item.get("SimilarityScore", 0.0),
-            )
-            for item in items
-        ]
+        # Reassemble chunked documents
+        reassembled_docs = {}
+        processed_original_ids = set()
+        
+        for item in items:
+            attributes = json.loads(item.get(self.attributes_field, "{}"))
+            original_id = attributes.get("_original_id")
+            part_number = attributes.get("_part_number")
+            total_parts = attributes.get("_total_parts")
+            
+            if original_id and part_number:
+                # This is a chunked document part
+                if original_id not in reassembled_docs:
+                    reassembled_docs[original_id] = {
+                        "parts": {},
+                        "vector": item.get(self.vector_field, []),
+                        "attributes": attributes.copy(),
+                        "score": item.get("SimilarityScore", 0.0),
+                        "total_parts": total_parts,
+                    }
+                    # Remove chunking metadata from attributes
+                    reassembled_docs[original_id]["attributes"].pop("_original_id", None)
+                    reassembled_docs[original_id]["attributes"].pop("_part_number", None)
+                    reassembled_docs[original_id]["attributes"].pop("_total_parts", None)
+                
+                # Store the text chunk
+                reassembled_docs[original_id]["parts"][part_number] = item.get(self.text_field, "")
+            else:
+                # Regular (non-chunked) document
+                doc_id = item.get(self.id_field, "")
+                if doc_id not in reassembled_docs:
+                    reassembled_docs[doc_id] = {
+                        "text": item.get(self.text_field, ""),
+                        "vector": item.get(self.vector_field, []),
+                        "attributes": attributes,
+                        "score": item.get("SimilarityScore", 0.0),
+                    }
+        
+        # Build final results list
+        results = []
+        for doc_id, doc_data in reassembled_docs.items():
+            # Skip if we've already processed this original_id
+            if doc_id in processed_original_ids:
+                continue
+            
+            # Check if this is a reassembled chunked document
+            if "parts" in doc_data:
+                # Reassemble text from parts
+                total_parts = doc_data.get("total_parts", len(doc_data["parts"]))
+                text_parts = []
+                for part_num in range(1, total_parts + 1):
+                    if part_num in doc_data["parts"]:
+                        text_parts.append(doc_data["parts"][part_num])
+                    else:
+                        # Missing part - log warning but continue
+                        print(f"Warning: Missing part {part_num} for document {doc_id}")  # noqa: T201
+                
+                reassembled_text = "".join(text_parts)
+                
+                # Get original_id from the first part's attributes (stored in reassembled_docs)
+                original_id = doc_id  # doc_id is the original_id for chunked docs
+                
+                results.append(
+                    VectorStoreSearchResult(
+                        document=VectorStoreDocument(
+                            id=original_id,
+                            text=reassembled_text,
+                            vector=doc_data["vector"],
+                            attributes=doc_data["attributes"],
+                        ),
+                        score=doc_data["score"],
+                    )
+                )
+                processed_original_ids.add(original_id)
+            else:
+                # Regular document
+                results.append(
+                    VectorStoreSearchResult(
+                        document=VectorStoreDocument(
+                            id=doc_id,
+                            text=doc_data["text"],
+                            vector=doc_data["vector"],
+                            attributes=doc_data["attributes"],
+                        ),
+                        score=doc_data["score"],
+                    )
+                )
+                processed_original_ids.add(doc_id)
+        
+        # Sort by score and return top k (deduplicated)
+        results = sorted(results, key=lambda x: x.score, reverse=True)[:k]
+        
+        return results
 
     def similarity_search_by_text(
         self, text: str, text_embedder: TextEmbedder, k: int = 10, **kwargs: Any
